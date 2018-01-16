@@ -153,6 +153,8 @@ class GenericGeoOptTest(unittest.TestCase):
         """Is optstatus consistent with geovalues and reasonable?"""
         self.assertEqual(len(self.data.optstatus), len(self.data.geovalues))
         self.assertEqual(self.data.optstatus[0], self.data.OPT_NEW)
+        for i in range(1, len(self.data.optstatus)-1):
+            self.assertEqual(self.data.optstatus[i], self.data.OPT_UNKNOWN)
         self.assertEqual(self.data.optstatus[-1], self.data.OPT_DONE)
 
     def testmoenergies(self):
@@ -160,6 +162,18 @@ class GenericGeoOptTest(unittest.TestCase):
         self.assertEquals(len(self.data.moenergies), 1)
         if hasattr(self.data, "mocoeffs"):
             self.assertEquals(len(self.data.mocoeffs), 1)
+
+    @skipForParser("ADF", "Not implemented.")
+    @skipForParser("DALTON", "Not implemented.")
+    @skipForParser("GAMESS", "Not implemented.")
+    @skipForParser("GAMESSUK", "Not implemented.")
+    @skipForParser("Jaguar", "Not implemented.")
+    @skipForParser("NWChem", "Not implemented.")
+    @skipForParser("ORCA", "Not implemented.")
+    @skipForParser("Psi", "Not implemented.")
+    def testgradsdim(self):
+        """Do the grads have the right dimensions?"""
+        self.assertEquals(self.data.grads.shape,(len(self.data.geovalues),self.data.natom,3))
 
 
 class ADFGeoOptTest(GenericGeoOptTest):
@@ -189,13 +203,6 @@ class DALTONGeoOptTest(GenericGeoOptTest):
         self.assertTrue(self.data.optdone)
         convergence = numpy.abs(self.data.geovalues[-1]) <= self.data.geotargets
         self.assertTrue(sum(convergence) >= 2)
-
-class GaussianGeoOptTest(GenericGeoOptTest):
-    """Customized geometry optimization unittest"""
-
-    def testgrads(self):
-        """Do the grads have the right dimensions?"""
-        self.assertEquals(self.data.grads.shape,(len(self.data.geovalues),self.data.natom,3))
 
 
 class MolproGeoOptTest(GenericGeoOptTest):

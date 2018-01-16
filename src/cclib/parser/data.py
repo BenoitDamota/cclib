@@ -53,7 +53,7 @@ class ccData(object):
         grid -- Integration grid
         hessian -- elements of the force constant matrix (array[1])
         homos -- molecular orbital indices of HOMO(s) (array[1])
-        metadata -- various metadata about the package and computation (dict) 
+        metadata -- various metadata about the package and computation (dict)
         mocoeffs -- molecular orbital coefficients (list of arrays[2])
         moenergies -- molecular orbital energies (list of arrays[1], eV)
         moments -- molecular multipole moments (list of arrays[], a.u.)
@@ -77,6 +77,8 @@ class ccData(object):
         scftargets -- targets for convergence of the SCF (array[2])
         scfvalues -- current values for convergence of the SCF (list of arrays[2])
         temperature -- temperature used for Thermochemistry (float, kelvin)
+        transprop -- all absorption and emission spectra (dictionary {name:(etenergies, etoscs)})
+            WARNING: this attribute is not standardized and is liable to change in cclib 2.0
         time -- time in molecular dynamics and other trajectories (array[1], fs)
         vibanharms -- vibrational anharmonicity constants (array[2], 1/cm)
         vibdisps -- cartesian displacement vectors (array[3], delta angstrom)
@@ -150,6 +152,7 @@ class ccData(object):
        "scftargets":       Attribute(numpy.ndarray,    'targets',                     'optimization:scf'),
        "scfvalues":        Attribute(list,             'values',                      'optimization:scf'),
        "temperature":      Attribute(float,            'temperature',                 'properties'),
+       "transprop":        Attribute(dict,             'electronic transitions',      'transitions'),
        "time":             Attribute(numpy.ndarray,    'time',                        'N/A'),
        "vibanharms":       Attribute(numpy.ndarray,    'anharmonicity constants',     'vibrations'),
        "vibdisps":         Attribute(numpy.ndarray,    'displacement',                'vibrations'),
@@ -173,10 +176,15 @@ class ccData(object):
     _dictsofarrays = ["atomcharges", "atomspins"]
 
     # Possible statuses for optimization steps.
-    OPT_UNKNOWN = 0
-    OPT_NEW = 1
-    OPT_DONE = 2
-    OPT_UNCONVERGED = 3
+    # OPT_UNKNOWN should not be used after parsing, unless for unfinished computations.
+    # OPT_NEW is set for every new optimization (e.g. PES, IRCs, etc.)
+    # OPT_DONE is set for the last step of an optimisation that converged.
+    # OPT_UNCONVERGED is set for every unconverged step (e.g. should be mutually exclusive with OPT_DONE)
+    # bit value notation allows coding for multiple states: OPT_NEW and OPT_UNCONVERGED or OPT_NEW and OPT_DONE.
+    OPT_UNKNOWN = 0b000
+    OPT_NEW = 0b001
+    OPT_UNCONVERGED = 0b010
+    OPT_DONE = 0b100
 
     def __init__(self, attributes={}):
         """Initialize the cclibData object.
@@ -284,7 +292,7 @@ class ccData(object):
                 args = (attr, type(val), self._attributes[attr].type)
                 raise TypeError("attribute %s is %s instead of %s and could not be converted" % args)
 
-    def write(self, filename=None, *args, **kwargs):
+    def write(self, filename=None, indices=None, *args, **kwargs):
         """Write parsed attributes to a file.
 
         Possible extensions:
@@ -294,20 +302,85 @@ class ccData(object):
         """
 
         from ..io import ccwrite
-        outputstr = ccwrite(self, outputdest=filename, *args, **kwargs)
+        outputstr = ccwrite(self, outputdest=filename, indices=indices,
+                            *args, **kwargs)
         return outputstr
 
-    def writejson(self, filename=None):
+    def writejson(self, filename=None, indices=None):
         """Write parsed attributes to a JSON file."""
-        return self.write(filename=filename, outputtype='cjson')
+        return self.write(filename=filename, indices=indices,
+                          outputtype='cjson')
 
-    def writecml(self, filename=None):
+    def writecml(self, filename=None, indices=None):
         """Write parsed attributes to a CML file."""
-        return self.write(filename=filename, outputtype='cml')
+        return self.write(filename=filename, indices=indices,
+                          outputtype='cml')
 
-    def writexyz(self, filename=None):
+    def writexyz(self, filename=None, indices=None):
         """Write parsed attributes to an XML file."""
-        return self.write(filename=filename, outputtype='xyz')
+        return self.write(filename=filename, indices=indices,
+                          outputtype='xyz')
+
+    @property
+    def converged_geometries(self):
+        """
+        Return all converged geometries.
+
+        An array containing only the converged geometries, e.g.:
+            - For PES or IRCs, return all geometries for which optstatus matches OPT_DONE
+            - The converged geometry for simple optimisations
+            - The input geometry for single points
+        """
+        if hasattr(self, 'optstatus'):
+            converged_indexes = [x for x, y in enumerate(self.optstatus) if y & self.OPT_DONE > 0]
+            return self.atomcoords[converged_indexes]
+        else:
+            return self.atomcoords
+
+    @property
+    def new_geometries(self):
+        """
+        Return all starting geometries.
+
+        An array containing only the starting geometries, e.g.:
+            - For PES or IRCs, return all geometries for which optstatus matches OPT_NEW
+            - The input geometry for simple optimisations or single points
+        """
+        if hasattr(self, 'optstatus'):
+            new_indexes = [x for x, y in enumerate(self.optstatus) if y & self.OPT_NEW > 0]
+            return self.atomcoords[new_indexes]
+        else:
+            return self.atomcoords
+
+    @property
+    def unknown_geometries(self):
+        """
+        Return all OPT_UNKNOWN geometries.
+
+        An array containing only the starting geometries, e.g.:
+            - For PES or IRCs, return all geometries for which optstatus matches OPT_UNKNOWN
+            - The input geometry for simple optimisations or single points
+        """
+        if hasattr(self, 'optstatus'):
+            unknown_indexes = [x for x, y in enumerate(self.optstatus) if y == self.OPT_UNKNOWN]
+            return self.atomcoords[unknown_indexes]
+        else:
+            return self.atomcoords
+
+    @property
+    def unconverged_geometries(self):
+        """
+        Return all unconverged geometries.
+
+        An array containing only the starting geometries, e.g.:
+            - For PES or IRCs, return all geometries for which optstatus matches OPT_UNCONVERGED
+            - The input geometry for simple optimisations or single points
+        """
+        if hasattr(self, 'optstatus'):
+            unconverged_indexes = [x for x, y in enumerate(self.optstatus) if y & self.OPT_UNCONVERGED > 0]
+            return self.atomcoords[unconverged_indexes]
+        else:
+            return self.atomcoords
 
     @property
     def nelectrons(self):
