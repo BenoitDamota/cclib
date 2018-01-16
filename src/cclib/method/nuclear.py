@@ -31,17 +31,17 @@ class Nuclear(Method):
 
     def repulsion_energy(self):
         """Return the nuclear repulsion energy."""
-
+        CstBohr2Ang = 0.52917721092 # !!!
         nre = 0.0
-        for i in range(self.data.natom):
-            ri = self.data.atomcoords[0][i]
-            zi = self.data.atomnos[i]
-            for j in range(i+1, self.data.natom):
-                rj = self.data.atomcoords[0][j]
-                zj = self.data.atomnos[j]
-                d = numpy.linalg.norm(ri-rj)
-                nre += zi*zj/d
-        return nre
+        for i in range(data.natom):
+            ri = data.atomcoords[-1][i]
+            zi = data.atomnos[i]
+            for j in range(i + 1, data.natom):
+                rj = data.atomcoords[-1][j]
+                zj = data.atomnos[j]
+                d = np.linalg.norm(ri - rj)
+                nre += zi * zj / d
+        return nre * CstBohr2Ang  # !!!
 
 
 if __name__ == "__main__":

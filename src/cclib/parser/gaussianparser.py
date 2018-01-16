@@ -131,6 +131,10 @@ class Gaussian(logfileparser.Logfile):
             self.atomcoords= \
               [self.atomcoords_BOMD[i] for i in sorted(self.atomcoords_BOMD.keys())]
 
+        # default solvent is Gas
+        if not self.metadata.has_key('solvent'):
+            self.metadata['solvent'] = 'Gas'
+
     def extract(self, inputfile, line):
         """Extract information from the file object inputfile."""
 
@@ -1358,6 +1362,28 @@ class Gaussian(logfileparser.Logfile):
             nbasis = int(line.split()[0])
             self.set_attribute('nbasis', nbasis)
 
+        # Integration Grid
+        # Note : take the absolute value of NGrid
+        grid_qual = ['Default', 'SG1 pruned', 'Coarse', 
+                     'Pruned', 'Fine', 'Ultrafine', 'Unknown', 'Superfine']
+        if line.startswith(' 3/'):
+            sline = line.split("75=")
+            if len(sline) > 1:
+                grid_nb = int(re.search("[\-0-9]*", sline[-1]).group(0))
+            else:
+                grid_nb = 0
+            if abs(grid_nb) < 8:
+                self.set_attribute('grid', grid_qual[abs(grid_nb)])
+            else:
+                self.set_attribute('grid', str(grid_nb))
+
+        # Solvent and solvent reaction field (SCRF)
+        if "Solvent" in line: 
+            self.metadata['solvent'] = line[24:-39].strip()
+        if "Polarizable" in line:
+            self.metadata['scrf'] = line[1:-1]
+        
+
         # Molecular orbital overlap matrix.
         # Has to deal with lines such as:
         #   *** Overlap ***
@@ -1654,6 +1680,35 @@ class Gaussian(logfileparser.Logfile):
                 self.atomcharges["mulliken"] = charges
             else:
                 self.atomcharges["lowdin"] = charges
+        # Hirshfeld charges
+        #
+        # Hirshfeld charges, spin densities, dipoles, and CM5 charges using IRadAn=      4:
+        #              Q-H        S-H        Dx         Dy         Dz        Q-CM5   
+        #     1  C   -0.073974   0.010494   0.011426   0.048074   0.081359  -0.141013
+        #     2  S    0.097028   0.013854  -0.015197  -0.020957   0.055773   0.087164
+        # ...
+        #
+        if "Hirshfeld charges, spin densities, dipoles, and CM5" in line:
+            if not hasattr(self, "atomcharges"):
+                self.atomcharges = {}
+
+            h_dic = {}
+            h_table = []
+            hline = next(inputfile).split()
+            for i in range(self.natom):
+                nline = next(inputfile)
+                h_table.append(map(float, nline.split()[2:]))
+            h_table = numpy.asarray(h_table).T
+            for i, h in enumerate(hline):
+                h_dic[h] = h_table[i]
+            self.atomcharges["hirshfeld"] = h_dic['Q-H'].tolist()
+            self.atomcharges["cm5"] = h_dic['Q-CM5'].tolist()
+            ### TODO : use other keywords
+            
+        if "Hirshfeld charges and spin densities with hydrogens summed into heavy atoms" in line:
+            ### TODO
+            pass
+
 
         if line.strip() == "Natural Population":
             if not hasattr(self, 'atomcharges'):
@@ -1685,6 +1740,10 @@ class Gaussian(logfileparser.Logfile):
         if line[1:12] == "Temperature":
             self.set_attribute('temperature', float(line.split()[1]))
             self.set_attribute('pressure', float(line.split()[4]))
+        if "zero-point Energies" in line:
+            self.set_attribute('zero_point_energy', float(line.split()[6]))
+        if "electronic and thermal Energies" in line:
+            self.set_attribute('electronic_thermal_energy', float(line.split()[6]))
 
         # Static polarizability (from `polar`), lower triangular
         # matrix.

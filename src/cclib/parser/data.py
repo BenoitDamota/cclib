@@ -33,6 +33,7 @@ class ccData(object):
         charge -- net charge of the system (integer)
         ccenergies -- molecular energies with Coupled-Cluster corrections (array[2], eV)
         coreelectrons -- number of core electrons in atom pseudopotentials (array[1])
+        electronic_thermal_energy -- sum of electronic and thermal Energies (float, hartree/particle)
         enthalpy -- sum of electronic and thermal enthalpies (float, hartree/particle)
         entropy -- entropy (float, hartree/particle)
         etenergies -- energies of electronic transitions (array[1], 1/cm)
@@ -49,6 +50,7 @@ class ccData(object):
         geotargets -- targets for convergence of geometry optimization (array[1])
         geovalues -- current values for convergence of geometry optmization (array[1])
         grads -- current values of forces (gradients) in geometry optimization (array[3])
+        grid -- Integration grid
         hessian -- elements of the force constant matrix (array[1])
         homos -- molecular orbital indices of HOMO(s) (array[1])
         metadata -- various metadata about the package and computation (dict) 
@@ -82,6 +84,7 @@ class ccData(object):
         vibirs -- IR intensities (array[1], km/mol)
         vibramans -- Raman intensities (array[1], A^4/Da)
         vibsyms -- symmetries of vibrations (list of strings)
+        zero_point_energy -- sum of electronic and zero-point Energies (float, hartree/particle)
     (1) The term 'array' refers to a numpy array
     (2) The number of dimensions of an array is given in square brackets
     (3) Python indexes arrays/lists starting at zero, so if homos==[10], then
@@ -103,6 +106,7 @@ class ccData(object):
        "ccenergies":       Attribute(numpy.ndarray,    'coupled cluster',             'properties:energy'),
        "charge":           Attribute(int,              'charge',                      'properties'),
        "coreelectrons":    Attribute(numpy.ndarray,    'core electrons',              'atoms'),
+       "electronic_thermal_energy": Attribute(float,   'electronic thermal energy',   'properties'),
        "enthalpy":         Attribute(float,            'enthalpy',                    'properties'),
        "entropy":          Attribute(float,            'entropy',                     'properties'),
        "etenergies":       Attribute(numpy.ndarray,    'electronic transitions',      'transitions'),
@@ -119,6 +123,7 @@ class ccData(object):
        "geotargets":       Attribute(numpy.ndarray,    'geometric targets',           'optimization'),
        "geovalues":        Attribute(numpy.ndarray,    'geometric values',            'optimization'),
        "grads":            Attribute(numpy.ndarray,    'TBD',                         'N/A'),
+       "grid" :            Attribute(str,              'integration grid',            'properties'),        
        "hessian":          Attribute(numpy.ndarray,    'hessian matrix',              'vibrations'),
        "homos":            Attribute(numpy.ndarray,    'homos',                       'properties:orbitals'),
        "metadata":         Attribute(dict,             'TBD',                         'N/A'),
@@ -151,7 +156,8 @@ class ccData(object):
        "vibfreqs":         Attribute(numpy.ndarray,    'frequencies',                 'vibrations'),
        "vibirs":           Attribute(numpy.ndarray,    'IR',                          'vibrations:intensities'),
        "vibramans":        Attribute(numpy.ndarray,    'raman',                       'vibrations:intensities'),
-       "vibsyms":          Attribute(list,             'vibration symmetry',          'vibrations')
+       "vibsyms":          Attribute(list,             'vibration symmetry',          'vibrations'),
+       "zero_point_energy":Attribute(float,            'zero point energy',           'properties')
     }
 
     # The name of all attributes can be generated from the dictionary above.
