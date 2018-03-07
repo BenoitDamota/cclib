@@ -20,9 +20,9 @@ import zipfile
 
 import numpy
 
-from . import utils
-from .data import ccData
-from .data import ccData_optdone_bool
+from cclib.parser import utils
+from cclib.parser.data import ccData
+from cclib.parser.data import ccData_optdone_bool
 
 
 # This seems to avoid a problem with Avogadro.
@@ -326,9 +326,12 @@ class Logfile(object):
         if not hasattr(self, "nmo") and hasattr(self, "nbasis"):
             self.nmo = self.nbasis
 
-        # Creating deafult coreelectrons array.
+        # Create a default coreelectrons array, unless it's impossible
+        # to determine.
         if not hasattr(self, "coreelectrons") and hasattr(self, "natom"):
             self.coreelectrons = numpy.zeros(self.natom, "i")
+        if hasattr(self, "incorrect_coreelectrons"):
+            self.__delattr__("coreelectrons")
 
         # Create the data object we want to return. This is normally ccData, but can be changed
         # by passing the datatype argument to the constructor. All supported cclib attributes

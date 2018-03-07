@@ -22,7 +22,7 @@ __filedir__ = os.path.realpath(os.path.dirname(__file__))
 
 # We need this in Python3 for importing things from the same directory
 # within the unit test files.
-sys.path.append(os.path.join(__filedir__, 'data'))
+sys.path.insert(1, os.path.join(__filedir__, 'data'))
 
 
 parser_names = [
@@ -37,7 +37,8 @@ module_names = [
     "MP", "CC", "CI", "TD", "TDun",             # Post-SCF calculations.
     "vib", "Polar", "Scan",                     # Other property calculations.
 ]
-all_modules = {tn: importlib.import_module('data.test' + tn) for tn in module_names}
+all_modules = {tn: importlib.import_module('.data.test' + tn, package='test')
+               for tn in module_names}
 
 
 def gettestdata():
@@ -273,7 +274,7 @@ def test_all(parsers=None, modules=None, status=False, terse=False, silent=True,
 
 
 if __name__ == "__main__":
-    
+
     # These allow the parsers and modules tested to be filtered on the command line
     # with any number of arguments. No matching parsers/modules implies all of them.
     parsers = {p: all_parsers[p] for p in parser_names if p in sys.argv} or None
