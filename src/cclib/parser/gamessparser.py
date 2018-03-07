@@ -96,11 +96,19 @@ class GAMESS(logfileparser.Logfile):
         if line[1:12] == "INPUT CARD>":
             return
 
+
         # extract the methods 
         if line[1:7] == "SCFTYP":
             method = line.split()[0][7:]
             if len(self.metadata["methods"]) == 0:
                 self.metadata["methods"].append(method)
+
+        # extract the functional
+        if line[1:7] == "DFTTYP":
+            functional = line.split()[0][7:]
+            if len(functional) > 0:
+                self.metadata["functional"] = functional
+                self.metadata["methods"].append('DFT')
 
         # extract the basis set name
         if line[5:11] == "GBASIS":
@@ -175,7 +183,7 @@ class GAMESS(logfileparser.Logfile):
         if line[10:18] == "OPTTOL =":
             if not hasattr(self, "geotargets"):
                 opttol = float(line.split()[2])
-                self.geotargets = numpy.array([opttol, 3. / opttol], "d")
+                self.geotargets = numpy.array([opttol, opttol / 3.], "d")
 
         # Has to deal with such lines as:
         #  FINAL R-B3LYP ENERGY IS     -382.0507446475 AFTER  10 ITERATIONS
