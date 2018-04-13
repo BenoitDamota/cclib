@@ -95,7 +95,7 @@ class Gaussian(logfileparser.Logfile):
         # Correct the percent values in the etsecs in the case of
         # a restricted calculation. The following has the
         # effect of including each transition twice.
-        if hasattr(self, "etsecs") and len(self.homos) == 1:
+        if hasattr(self, "etsecs") and hasattr(self, "homos") and len(self.homos) == 1:
             new_etsecs = [[(x[0], x[1], x[2] * numpy.sqrt(2)) for x in etsec]
                           for etsec in self.etsecs]
             self.etsecs = new_etsecs
@@ -489,11 +489,27 @@ class Gaussian(logfileparser.Logfile):
 
             if not hasattr(self, "atommasses"):
                 self.atommasses = []
+            if not hasattr(self, "nuclearspins"):
+                self.nuclearspins = []
+            if not hasattr(self, "atomzeff"):
+                self.atomzeff = []
+            if not hasattr(self, "nuclearqmom"):
+                self.nuclearqmom = []
+            if not hasattr(self, "nucleargfactors"):
+                self.nucleargfactors = []
 
             line = next(inputfile)
             while line[1:16] != "Leave Link  101":
                 if line[1:8] == "AtmWgt=":
                     self.atommasses.extend(list(map(float, line.split()[1:])))
+                if line[1:8] == "NucSpn=":
+                    self.nuclearspins.extend(list(map(float, line.split()[1:])))
+                if line[1:8] == "AtZEff=":
+                    self.atomzeff.extend(list(map(float, line.split()[1:])))
+                if line[1:7] == "NQMom=":
+                    self.nuclearqmom.extend(list(map(float, line.split()[1:])))
+                if line[1:7] == "NMagM=":
+                    self.nucleargfactors.extend(list(map(float, line.split()[1:])))
                 line = next(inputfile)
 
         # Extract the atomic numbers and coordinates of the atoms.
@@ -832,6 +848,16 @@ class Gaussian(logfileparser.Logfile):
                     self.ccenergies = []
                 self.ccenergies.append(utils.convertor(self.ccenergy, "hartree", "eV"))
                 del self.ccenergy
+
+
+        ## search for Virial ratio -V/T=
+        if not hasattr(self, "virialratio"):
+            self.virialratio = []
+        if line[41:46] == "-V/T=":
+            self.virialratio.append(float(line[47:]))
+
+
+
         # Find step number for current optimization/IRC
         # Matches "Step number  123", "Pt XX Step number 123" and "PtXXX Step number 123"
         if " Step number" in line:
