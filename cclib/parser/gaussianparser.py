@@ -133,7 +133,7 @@ class Gaussian(logfileparser.Logfile):
               [self.atomcoords_BOMD[i] for i in sorted(self.atomcoords_BOMD.keys())]
 
         # default solvent is Gas
-        if not self.metadata.has_key('solvent'):
+        if not 'solvent' in self.metadata.keys():
             self.metadata['solvent'] = 'Gas'
 
     def extract(self, inputfile, line):
@@ -1244,8 +1244,9 @@ class Gaussian(logfileparser.Logfile):
 
         # Electronic transitions.
         if line[1:14] == "Excited State":
-
-            if not hasattr(self, "etenergies"):
+            ## keep only last Excited states (for optimization of excited states)
+            et_num = int(line[14:18])
+            if not hasattr(self, "etenergies") or et_num == 1 :
                 self.etenergies = []
                 self.etoscs = []
                 self.etsyms = []
@@ -1726,8 +1727,8 @@ class Gaussian(logfileparser.Logfile):
             h_table = numpy.asarray(h_table).T
             for i, h in enumerate(hline):
                 h_dic[h] = h_table[i]
-            self.atomcharges["hirshfeld"] = h_dic['Q-H'].tolist()
-            self.atomcharges["cm5"] = h_dic['Q-CM5'].tolist()
+            self.atomcharges["hirshfeld"] = list(h_dic['Q-H'])
+            self.atomcharges["cm5"] = list(h_dic['Q-CM5'])
             ### TODO : use other keywords
             
         if "Hirshfeld charges and spin densities with hydrogens summed into heavy atoms" in line:
