@@ -1723,7 +1723,7 @@ class Gaussian(logfileparser.Logfile):
             hline = next(inputfile).split()
             for i in range(self.natom):
                 nline = next(inputfile)
-                h_table.append(map(float, nline.split()[2:]))
+                h_table.append([float(i) for i in nline.split()[2:]])
             h_table = numpy.asarray(h_table).T
             for i, h in enumerate(hline):
                 h_dic[h] = h_table[i]
