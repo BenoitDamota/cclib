@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (c) 2017, the cclib development team
+# Copyright (c) 2019, the cclib development team
 #
 # This file is part of cclib (http://cclib.github.io) and is distributed under
 # the terms of the BSD 3-Clause License.
@@ -10,13 +10,13 @@
 import io
 import os
 import sys
+import tempfile
 import unittest
 
-# The structure of urllib changed in Python3.
-try:
-    from urllib.request import urlopen
-except ImportError:
-    from urllib import urlopen
+from six import add_move, MovedModule
+add_move(MovedModule('mock', 'mock', 'unittest.mock'))
+from six.moves import mock
+from six.moves.urllib.request import urlopen
 
 import numpy
 
@@ -75,15 +75,16 @@ class FileWrapperTest(unittest.TestCase):
         get_attributes = lambda data: [a for a in data._attrlist if hasattr(data, a)]
         for lf in logfiles:
             path = "%s/%s" % (__datadir__, lf)
-            expected_attributes = get_attributes(cclib.io.ccopen(path).parse())
-            contents = open(path).read()
+            expected_attributes = get_attributes(cclib.io.ccread(path))
+            with open(path) as handle:
+                contents = handle.read()
             # This is fix strings not being unicode in Python2.
             try:
                 stdin = io.StringIO(contents)
             except TypeError:
                 stdin = io.StringIO(unicode(contents))
             stdin.seek = sys.stdin.seek
-            data = cclib.io.ccopen(stdin).parse()
+            data = cclib.io.ccread(stdin)
             self.assertEqual(get_attributes(data), expected_attributes)
 
 
@@ -113,6 +114,22 @@ class LogfileTest(unittest.TestCase):
         """Does this method raise an error in the base class?"""
         normalisesym = cclib.parser.logfileparser.Logfile('').normalisesym
         self.assertRaises(NotImplementedError, normalisesym, 'Ag')
+
+    def test_parse_check_values(self):
+        """Are custom checks performed after parsing finishes?
+        
+        The purpose of this test is not to comprehensively cover all the checks,
+        but rather to make sure the call and logging works. The unit tests
+        for the data class should have comprehensive coverage.
+        """
+        _, path = tempfile.mkstemp()
+        parser = cclib.parser.logfileparser.Logfile(path)
+        parser.extract = lambda self, inputfile, line: None
+        parser.logger = mock.Mock()
+
+        parser.etenergies = [1, -1]
+        parser.parse()
+        parser.logger.error.assert_called_once()
 
 
 if __name__ == "__main__":

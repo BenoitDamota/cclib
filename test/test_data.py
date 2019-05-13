@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (c) 2017, the cclib development team
+# Copyright (c) 2019, the cclib development team
 #
 # This file is part of cclib (http://cclib.github.io) and is distributed under
 # the terms of the BSD 3-Clause License.
@@ -10,6 +10,7 @@
 from __future__ import print_function
 
 import importlib
+import logging
 import os
 import sys
 import unittest
@@ -27,15 +28,19 @@ sys.path.insert(1, os.path.join(__filedir__, 'data'))
 
 parser_names = [
     "ADF", "DALTON", "GAMESS", "GAMESSUK", "Gaussian", "Jaguar", "Molpro",
-    "MOPAC", "NWChem", "ORCA", "Psi", "QChem",
+    "Molcas", "MOPAC", "NWChem", "ORCA", "Psi4", "QChem", "Turbomole",
 ]
 all_parsers = {name: getattr(cclib.parser, name) for name in parser_names}
+
+# Not used currently, but keeping in a list to keep track of which parsers
+# are in the legacy bin.
+legacy_parser_names = ["Psi3"]
 
 
 module_names = [
     "SP", "SPun", "GeoOpt", "Basis", "Core",    # Basic calculations.
     "MP", "CC", "CI", "TD", "TDun",             # Post-SCF calculations.
-    "vib", "Polar", "Scan",                     # Other property calculations.
+    "vib", "BOMD", "Polar", "Scan",             # Other property calculations.
 ]
 all_modules = {tn: importlib.import_module('.data.test' + tn, package='test')
                for tn in module_names}
@@ -45,7 +50,8 @@ def gettestdata():
     """Return a dict of the test file data."""
 
     testdatadir = os.path.dirname(os.path.realpath(__file__))
-    lines = open(testdatadir + '/testdata').readlines()
+    with open(testdatadir + '/testdata') as testdatafile:
+        lines = testdatafile.readlines()
 
     # Remove blank lines and those starting with '#'.
     lines = [line for line in lines if (line.strip() and line[0] != '#')]
@@ -72,7 +78,7 @@ def get_program_dir(parser_name):
     return parser_name
 
 
-def getdatafile(parser, subdir, files, stream=None, loglevel=0, datatype=None):
+def getdatafile(parser, subdir, files, stream=None, loglevel=logging.ERROR, datatype=None):
     """Returns a parsed logfile.
 
     Inputs:
@@ -102,9 +108,8 @@ def getdatafile(parser, subdir, files, stream=None, loglevel=0, datatype=None):
         inputs = inputs[0]
 
     stream = stream or sys.stdout
-    logfile = parser(inputs, logstream=stream,
+    logfile = parser(inputs, logstream=stream, loglevel=loglevel,
                      datatype=datatype or cclib.parser.data.ccData)
-    logfile.logger.setLevel(loglevel)
 
     data = logfile.parse()
     return data, logfile
@@ -127,13 +132,13 @@ class DataSuite(object):
     subdirectory, and do some basic bookkeeping.
     """
 
-    def __init__(self, parsers, modules, status=False, terse=False, silent=False, stream=sys.stdout):
+    def __init__(self, parsers, modules, terse=False, silent=False, loglevel=logging.ERROR, stream=sys.stdout):
 
         self.parsers = parsers
         self.modules = modules
-        self.status = status
         self.terse = terse or silent
         self.silent = silent
+        self.loglevel = loglevel
         self.stream = stream
 
         # Load the test data and filter with parsers and modules.
@@ -172,9 +177,10 @@ class DataSuite(object):
                 description = "%s/%s: %s" % (td['subdir'], ",".join(td['files']), test.__doc__)
                 print("*** %s ***" % description, file=self.stream)
 
-            loglevel = 33 if self.silent else 0
-            test.data, test.logfile = getdatafile(parser, td['subdir'], td['files'], stream=self.stream, loglevel=loglevel,
-                                                  datatype=test.datatype if hasattr(test, 'datatype') else None)
+            test.data, test.logfile = getdatafile(
+                parser, td['subdir'], td['files'], stream=self.stream, loglevel=self.loglevel,
+                datatype=test.datatype if hasattr(test, 'datatype') else None
+            )
 
             # By overriding __getattribute__ temporarily with a custom method, we collect
             # coverage information for data attributes while the tests are run. This slightly
@@ -230,7 +236,7 @@ class DataSuite(object):
         print("TOTAL: %d\tPASSED: %d\tFAILED: %d\tERRORS: %d\tSKIPPED: %d" \
                 %(total[0], total[0]-(total[1]+total[2]+total[3]), total[2], total[1], total[3]), file=self.stream)
 
-        if self.status and len(self.errors) > 0:
+        if self.errors or self.failures:
             sys.exit(1)
 
     def visualtests(self, stream=sys.stdout):
@@ -247,9 +253,9 @@ class DataSuite(object):
             # Note that it doesn't make sense to put MOPAC here, as it
             # is a semiempirical-only program.
             'NWChem6.5' : getdatafile('NWChem', "basicNWChem6.5", ["dvb_gopt_ks.out"])[0],
-            'ORCA3.0' : getdatafile('ORCA', "basicORCA3.0", ["dvb_gopt.out"])[0],
-            'Psi4.0' : getdatafile('Psi', "basicPsi4.0", ["dvb_gopt_rks.out"])[0],
-            'QChem4.2' : getdatafile('QChem', "basicQChem4.2", ["dvb_gopt.out"])[0],
+            'ORCA4.1' : getdatafile('ORCA', "basicORCA4.1", ["dvb_gopt.out"])[0],
+            'Psi4-1.0' : getdatafile('Psi4', "basicPsi4-1.0", ["dvb_gopt_rks.out"])[0],
+            'QChem5.1' : getdatafile('QChem', "basicQChem5.1", ["dvb_gopt.out"])[0],
         }
         parser_names = sorted(parsers_to_test.keys())
         output = [parsers_to_test[pn] for pn in parser_names]
@@ -262,10 +268,12 @@ class DataSuite(object):
         print("H-L ", "   ".join(["%9.4f" % (out.moenergies[0][out.homos[0]+1]-out.moenergies[0][out.homos[0]],) for out in output]), file=self.stream)
 
 
-def test_all(parsers=None, modules=None, status=False, terse=False, silent=True, summary=True, visual_tests=True):
+def test_all(
+    parsers=None, modules=None, terse=False, silent=True, loglevel=logging.ERROR, summary=True, visual_tests=True
+):
     parsers = parsers or all_parsers
     modules = modules or all_modules
-    data_suite = DataSuite(parsers, modules, status=status, terse=terse, silent=silent)
+    data_suite = DataSuite(parsers, modules, terse=terse, silent=silent, loglevel=loglevel)
     data_suite.testall()
     if summary and not silent:
         data_suite.summary()
@@ -275,14 +283,28 @@ def test_all(parsers=None, modules=None, status=False, terse=False, silent=True,
 
 if __name__ == "__main__":
 
-    # These allow the parsers and modules tested to be filtered on the command line
-    # with any number of arguments. No matching parsers/modules implies all of them.
-    parsers = {p: all_parsers[p] for p in parser_names if p in sys.argv} or None
-    modules = {m: all_modules[m] for m in module_names if m in sys.argv} or None
+    import argparse
 
-    # These options modify the output and are used by testall and Travis CI.
-    status = "--status" in sys.argv
-    terse = "--terse" in sys.argv
-    silent = "--silent" in sys.argv
+    parser = argparse.ArgumentParser()
 
-    test_all(parsers, modules, status=status, terse=terse, silent=silent)
+    parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--terse", action="store_true")
+    parser.add_argument("--silent", action="store_true")
+    parser.add_argument(
+        "parser_or_module",
+        nargs="*",
+        help="Limit the test to the packages/parsers passed as arguments. "
+             "No arguments implies all parsers."
+    )
+
+    args = parser.parse_args()
+
+    loglevel = logging.DEBUG if args.debug else logging.ERROR
+
+    # No matching parsers/modules implies all of them.
+    parsers = {p: all_parsers[p] for p in parser_names
+               if p in args.parser_or_module} or None
+    modules = {m: all_modules[m] for m in module_names
+               if m in args.parser_or_module} or None
+
+    test_all(parsers, modules, terse=args.terse, silent=args.silent, loglevel=loglevel)

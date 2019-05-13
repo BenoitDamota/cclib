@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (c) 2017, the cclib development team
+# Copyright (c) 2018, the cclib development team
 #
 # This file is part of cclib (http://cclib.github.io) and is distributed under
 # the terms of the BSD 3-Clause License.
@@ -60,9 +60,14 @@ class Jaguar(logfileparser.Logfile):
     def extract(self, inputfile, line):
         """Extract information from the file object inputfile."""
 
-        # Extract the version number first
+        # Extract the package version number.
         if "Jaguar version" in line:
-            self.metadata["package_version"] = line.split()[3][:-1]
+            tokens = line.split()
+            # Don't add revision information to the main package
+            # version for now.
+            # package_version = "{}.r{}".format(tokens[3][:-1], tokens[5])
+            package_version = tokens[3][:-1]
+            self.metadata["package_version"] = package_version
 
         # Extract the basis set name
         if line[2:12] == "basis set:":
@@ -681,7 +686,7 @@ class Jaguar(logfileparser.Logfile):
                 self.etsecs = []
                 self.etsyms = []
             etenergy = float(line.split()[3])
-            etenergy = utils.convertor(etenergy, "eV", "cm-1")
+            etenergy = utils.convertor(etenergy, "eV", "wavenumber")
             self.etenergies.append(etenergy)
 
             self.skip_lines(inputfile, ['line', 'line', 'line', 'line'])
@@ -701,3 +706,7 @@ class Jaguar(logfileparser.Logfile):
                 line = next(inputfile)
             strength = float(line.split()[-1])
             self.etoscs.append(strength)
+
+        if line[:20] == ' Total elapsed time:' \
+                or line[:18] == ' Total cpu seconds':
+            self.metadata['success'] = True

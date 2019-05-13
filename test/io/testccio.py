@@ -8,10 +8,17 @@
 """Unit tests for parser ccio module."""
 
 import os
+import sys
 import tempfile
 import unittest
 
 import cclib
+
+from six import add_move, MovedModule
+add_move(MovedModule('mock', 'mock', 'unittest.mock'))
+from six.moves import mock
+
+from six import StringIO
 
 
 __filedir__ = os.path.dirname(__file__)
@@ -43,7 +50,8 @@ class guess_fileypeTest(unittest.TestCase):
         self.assertEqual(self.guess(['MOPAC2016']), cclib.parser.MOPAC)
         self.assertEqual(self.guess(['Northwest Computational Chemistry Package']), cclib.parser.NWChem)
         self.assertEqual(self.guess(['O   R   C   A']), cclib.parser.ORCA)
-        self.assertEqual(self.guess(["PSI ...Ab Initio Electronic Structure"]), cclib.parser.Psi)
+        self.assertEqual(self.guess(["PSI3: An Open-Source Ab Initio Electronic Structure Package"]), cclib.parser.Psi3)
+        self.assertEqual(self.guess(["Psi4: An Open-Source Ab Initio Electronic Structure Package"]), cclib.parser.Psi4)
         self.assertEqual(self.guess(['A Quantum Leap Into The Future Of Chemistry']), cclib.parser.QChem)
 
 
@@ -89,7 +97,7 @@ class ccopenTest(unittest.TestCase):
         """Does the function works with URLs such good as with filenames?"""
         fpath = os.path.join(__datadir__, "data")
         base_url = "https://raw.githubusercontent.com/cclib/cclib/master/data/"
-        filenames = ["DALTON/basicDALTON-2013/dvb_td.out", "Molpro/basicMolpro2012/h2o_mp2.out"]
+        filenames = ["QChem/basicQChem5.1/dvb_td.out", "Molpro/basicMolpro2012/h2o_mp2.out"]
         for fname in filenames:
             self.assertEqual(self.ccopen(os.path.join(fpath, fname), quiet=True).parse().getattributes(tolists=True),
                              self.ccopen(base_url + fname, quiet=True).parse().getattributes(tolists=True))
@@ -105,10 +113,10 @@ class ccopenTest(unittest.TestCase):
             self.ccopen([base_url + fname for fname in filenames], quiet=True)
                 .parse().getattributes(tolists=True))
 
-    # This should also work if cjsonreader supported streams.
-    #def test_cjson(self):
-    #    """Do we get a CJSON object then keyword argument used?"""
-    #    self.assertIsInstance(self.ccopen(StringIO.StringIO(""), cjson=True), cclib.io.cjsonreader.CJSON)
+    @unittest.skip("This should also work if cjsonreader supported streams.")
+    def test_cjson(self):
+        """Do we get a CJSON object then keyword argument used?"""
+        self.assertIsInstance(self.ccopen(StringIO(""), cjson=True), cclib.io.cjsonreader.CJSON)
 
 
 class _determine_output_formatTest(unittest.TestCase):
@@ -138,6 +146,17 @@ class fallbackTest(unittest.TestCase):
     def test_fallback_fail(self):
         """Does the function fail as expected?"""
         self.assertIsNone(self.fallback(None))
+
+
+class ccframeTest(unittest.TestCase):
+
+    @mock.patch("cclib.io.ccio._has_pandas", False)
+    def test_ccframe_call_without_pandas(self):
+        """Does ccframe fails cleanly if Pandas can't be imported?"""
+        with self.assertRaisesRegexp(
+            ImportError, "You must install `pandas` to use this function"
+        ):
+            cclib.io.ccio.ccframe([])
 
 
 if __name__ == "__main__":

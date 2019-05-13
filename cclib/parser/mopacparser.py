@@ -86,6 +86,25 @@ class MOPAC(logfileparser.Logfile):
     def extract(self, inputfile, line):
         """Extract information from the file object inputfile."""
 
+        if "(Version:" in line:
+            # Part of the full version can be extracted from here, but is
+            # missing information about the bitness.
+            package_version = line[line.find("MOPAC") + 5:line.find("(")]
+            package_version = package_version[:4]
+            if "BETA" in line:
+                package_version = package_version + " BETA"
+            self.metadata["package_version"] = package_version
+
+        # Don't use the full package version until we know its field
+        # yet.
+        if "For non-commercial use only" in line:
+            tokens = line.split()
+            tokens = tokens[8:]
+            assert len(tokens) == 2
+            package_version_full = tokens[0]
+            if tokens[1] != "**":
+                package_version_full = '-'.join(tokens)[:-2]
+
         # Extract the atomic numbers and coordinates from the optimized geometry
         # note that cartesian coordinates section occurs multiple times in the file, and we want to end up using the last instance
         # also, note that the section labeled cartesian coordinates doesn't have as many decimal places as the one used here
@@ -142,14 +161,16 @@ class MOPAC(logfileparser.Logfile):
             self.set_attribute('mult', mult)
 
         # Read energy (in kcal/mol, converted to eV)
-        #       Example:           FINAL HEAT OF FORMATION =       -333.88606 KCAL =   -1396.97927 KJ
-        if line[0:35] == '          FINAL HEAT OF FORMATION =':
+        #
+        # FINAL HEAT OF FORMATION =       -333.88606 KCAL =   -1396.97927 KJ
+        if 'FINAL HEAT OF FORMATION =' in line:
             if not hasattr(self, "scfenergies"):
                 self.scfenergies = []
-            self.scfenergies.append(utils.convertor(self.float(line.split()[5]), "kcal", "eV"))
+            self.scfenergies.append(utils.convertor(self.float(line.split()[5]), "kcal/mol", "eV"))
 
-        #molecular mass parsing (units will be amu)
-        #Example:          MOLECULAR WEIGHT        =
+        # Molecular mass parsing (units will be amu)
+        #
+        # MOLECULAR WEIGHT        ==        130.1890
         if line[0:35] == '          MOLECULAR WEIGHT        =':
             self.molmass = self.float(line.split()[3])
 
@@ -232,3 +253,6 @@ class MOPAC(logfileparser.Logfile):
         # Partial charges and dipole moments
         # Example:
         # NET ATOMIC CHARGES
+
+        if line[:16] == '== MOPAC DONE ==':
+            self.metadata['success'] = True

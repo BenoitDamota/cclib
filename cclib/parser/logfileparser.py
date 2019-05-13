@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (c) 2017, the cclib development team
+# Copyright (c) 2019, the cclib development team
 #
 # This file is part of cclib (http://cclib.github.io) and is distributed under
 # the terms of the BSD 3-Clause License.
@@ -17,6 +17,11 @@ import os
 import random
 import sys
 import zipfile
+
+if sys.version_info.major == 2:
+    getargspec = inspect.getargspec
+else:
+    getargspec = inspect.getfullargspec
 
 import numpy
 
@@ -185,8 +190,8 @@ class Logfile(object):
         NWChem, ORCA, Psi, Q-Chem
     """
 
-    def __init__(self, source, loglevel=logging.INFO, logname="Log",
-                 logstream=sys.stdout, datatype=ccData_optdone_bool, **kwds):
+    def __init__(self, source, loglevel=logging.ERROR, logname="Log",
+                 logstream=sys.stderr, datatype=ccData_optdone_bool, **kwds):
         """Initialise the Logfile object.
 
         This should be called by a subclass in its own __init__ method.
@@ -202,18 +207,23 @@ class Logfile(object):
         # Set the filename to source if it is a string or a list of strings, which are
         # assumed to be filenames. Otherwise, assume the source is a file-like object
         # if it has a read method, and we will try to use it like a stream.
+        self.isfileinput = False
         if isinstance(source, str):
             self.filename = source
             self.isstream = False
         elif isinstance(source, list) and all([isinstance(s, str) for s in source]):
             self.filename = source
             self.isstream = False
+        elif isinstance(source, fileinput.FileInput):
+            self.filename = source
+            self.isstream = False
+            self.isfileinput = True
         elif hasattr(source, "read"):
             self.filename = "stream %s" % str(type(source))
             self.isstream = True
             self.stream = source
         else:
-            raise ValueError
+            raise ValueError("Unexpected source type.")
 
         # Set up the logger.
         # Note that calling logging.getLogger() with one name always returns the same instance.
@@ -233,6 +243,8 @@ class Logfile(object):
             self.metadata = {}
             self.metadata["package"] = self.logname
             self.metadata["methods"] = []
+            # Indicate if the computation has completed successfully
+            self.metadata['success'] = False
 
 
         # Periodic table of elements.
@@ -248,11 +260,13 @@ class Logfile(object):
         optdone_as_list = optdone_as_list if isinstance(optdone_as_list, bool) else False
         if optdone_as_list:
             self.datatype = ccData
+        # Parsing of Natural Orbitals and Natural Spin Orbtials into one attribute
+        self.unified_no_nso = kwds.get("future",False)
 
     def __setattr__(self, name, value):
 
-        # Send info to logger if the attribute is in the list self._attrlist.
-        if name in getattr(self, "_attrlist", {}) and hasattr(self, "logger"):
+        # Send info to logger if the attribute is in the list of attributes.
+        if name in ccData._attrlist and hasattr(self, "logger"):
 
             # Call logger.info() only if the attribute is new.
             if not hasattr(self, name):
@@ -273,7 +287,7 @@ class Logfile(object):
             raise AttributeError("Class %s has no extract() method." % self.__class__.__name__)
         if not callable(self.extract):
             raise AttributeError("Method %s._extract not callable." % self.__class__.__name__)
-        if len(inspect.getargspec(self.extract)[0]) != 3:
+        if len(getargspec(self.extract)[0]) != 3:
             raise AttributeError("Method %s._extract takes wrong number of arguments." % self.__class__.__name__)
 
         # Save the current list of attributes to keep after parsing.
@@ -283,7 +297,10 @@ class Logfile(object):
         # Initiate the FileInput object for the input files.
         # Remember that self.filename can be a list of files.
         if not self.isstream:
-            inputfile = openlogfile(self.filename)
+            if not self.isfileinput:
+                inputfile = openlogfile(self.filename)
+            else:
+                inputfile = self.filename
         else:
             inputfile = FileWrapper(self.stream)
 
@@ -308,7 +325,11 @@ class Logfile(object):
             # If it does, it parses some lines and sets the relevant attributes (to self).
             # Any attributes can be freely set and used across calls, however only those
             #   in data._attrlist will be moved to final data object that is returned.
-            self.extract(inputfile, line)
+            try:
+                self.extract(inputfile, line)
+            except StopIteration:
+                self.logger.error("Unexpectedly encountered end of logfile.")
+                break
 
         # Close input file object.
         if not self.isstream:
@@ -350,6 +371,9 @@ class Logfile(object):
         for attr in list(self.__dict__.keys()):
             if not attr in _nodelete:
                 self.__delattr__(attr)
+
+        # Perform final checks on values of attributes.
+        data.check_values(logger=self.logger)
 
         # Update self.progress as done.
         if hasattr(self, "progress"):
@@ -397,20 +421,78 @@ class Logfile(object):
 
         return float(number.replace("D", "E"))
 
-    def set_attribute(self, name, value, check=True):
-        """Set an attribute and perform a check when it already exists.
+    def new_internal_job(self):
+        """Delete attributes that can be problematic in multistep jobs.
+
+        TODO: instead of this hack, parse each job in a multistep comptation
+        as a different ccData object (this is for 2.x).
+
+        Some computations are actually sequences of several jobs, and some
+        attributes won't work well if parsed across jobs. There include:
+            mpenergies: if different jobs go to different orders then
+                        these won't be consistent and can't be converted
+                        to an array easily
+        """
+        for name in ("mpenergies",):
+            if hasattr(self, name):
+                delattr(self, name)
+
+    def set_attribute(self, name, value, check_change=True):
+        """Set an attribute and perform an optional check when it already exists.
 
         Note that this can be used for scalars and lists alike, whenever we want
-        to set a value for an attribute. By default we want to check that
-        the value does not change if the attribute already exists, and this function
-        is a good place to add more tests in the future.
+        to set a value for an attribute.
+        
+        Parameters
+        ----------
+        name: str
+            The name of the attribute.
+        value: str
+            The value for the attribute.
+        check_change: bool
+            By default we want to check that the value does not change
+            if the attribute already exists.
         """
-        if check and hasattr(self, name):
+        if check_change and hasattr(self, name):
             try:
-                assert getattr(self, name) == value
+                numpy.testing.assert_equal(getattr(self, name), value)
             except AssertionError:
                 self.logger.warning("Attribute %s changed value (%s -> %s)" % (name, getattr(self, name), value))
+
         setattr(self, name, value)
+
+    def append_attribute(self, name, value):
+        """Appends a value to an attribute."""
+
+        if not hasattr(self, name):
+            self.set_attribute(name, [])
+        getattr(self, name).append(value)
+
+    def _assign_coreelectrons_to_element(self, element, ncore,
+                                         ncore_is_total_count=False):
+        """Assign core electrons to all instances of the element.
+
+        It's usually reasonable to do this for all atoms of a given element,
+        because mixed usage isn't normally allowed within elements.
+
+        Parameters
+        ----------
+        element: str
+          the chemical element to set coreelectrons for
+        ncore: int
+          the number of core electrons
+        ncore_is_total_count: bool
+          whether the ncore argument is the total count, in which case it is
+          divided by the number of atoms of this element
+        """
+        atomsymbols = [self.table.element[atomno] for atomno in self.atomnos]
+        indices = [i for i, el in enumerate(atomsymbols) if el == element]
+        if ncore_is_total_count:
+            ncore = ncore // len(indices)
+
+        if not hasattr(self, 'coreelectrons'):
+            self.coreelectrons = numpy.zeros(self.natom, 'i')
+        self.coreelectrons[indices] = ncore
 
     def skip_lines(self, inputfile, sequence):
         """Read trivial line types and check they are what they are supposed to be.

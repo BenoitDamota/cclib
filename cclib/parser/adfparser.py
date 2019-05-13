@@ -1,6 +1,6 @@
 ## -*- coding: utf-8 -*-
 #
-# Copyright (c) 2017, the cclib development team
+# Copyright (c) 2018, the cclib development team
 #
 # This file is part of cclib (http://cclib.github.io) and is distributed under
 # the terms of the BSD 3-Clause License.
@@ -122,6 +122,22 @@ class ADF(logfileparser.Logfile):
                 if line and not line[:6] in ("Create", "create"):
                     break
                 line = next(inputfile)
+
+        version_searchstr = "Amsterdam Density Functional  (ADF)"
+        if version_searchstr in line:
+            startidx = line.index(version_searchstr) + len(version_searchstr)
+            trimmed_line = line[startidx:].strip()[:-1]
+            # The package version is normally a year with revision
+            # number (such as 2013.01), but it may also be a random
+            # string (such as a version control branch name).
+            match = re.search(r"([\d\.]{4,7})", trimmed_line)
+            if match:
+                package_version = match.groups()[0]
+                self.metadata["package_version"] = package_version
+            else:
+                # This isn't as well-defined, but the field shouldn't
+                # be left empty.
+                self.metadata["package_version"] = trimmed_line.strip()
 
         # In ADF 2014.01, there are (INPUT FILE) messages, so we need to use just
         # the lines that start with 'Create' and run until the title or something
@@ -982,7 +998,7 @@ class ADF(logfileparser.Logfile):
             line = next(inputfile)
             while len(line) > 2:
                 info = line.split()
-                etenergies.append(utils.convertor(float(info[2]), "eV", "cm-1"))
+                etenergies.append(utils.convertor(float(info[2]), "eV", "wavenumber"))
                 etoscs.append(float(info[3]))
                 etsyms.append(symm)
                 line = next(inputfile)
@@ -1151,3 +1167,6 @@ class ADF(logfileparser.Logfile):
                     self.polarizabilities.append(polarizability)
 
                 line = next(inputfile)
+
+        if line[:24] == ' Buffered I/O statistics':
+            self.metadata['success'] = True

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (c) 2017, the cclib development team
+# Copyright (c) 2018, the cclib development team
 #
 # This file is part of cclib (http://cclib.github.io) and is distributed under
 # the terms of the BSD 3-Clause License.
@@ -20,7 +20,7 @@ from cclib.parser import utils
 
 
 class QChem(logfileparser.Logfile):
-    """A Q-Chem 4 log file."""
+    """A Q-Chem log file."""
 
     def __init__(self, *args, **kwargs):
 
@@ -59,7 +59,6 @@ class QChem(logfileparser.Logfile):
             'Done with SCF on isolated fragments',
             'Done with counterpoise correction on fragments',
         )
-
 
         # Compile the dashes-and-or-spaces-only regex.
         self.re_dashes_and_spaces = re.compile('^[\s-]+$')
@@ -164,9 +163,6 @@ class QChem(logfileparser.Logfile):
         # Assign the number of core electrons replaced by ECPs.
         if hasattr(self, 'user_input') and self.user_input.get('rem') is not None:
             if self.user_input['rem'].get('ecp') is not None:
-                self.coreelectrons = numpy.zeros(self.natom, 'i')
-                self.atomsymbols = [self.table.element[atomno]
-                                 for atomno in self.atomnos]
                 ecp_is_gen = (self.user_input['rem']['ecp'] == 'gen')
                 if ecp_is_gen:
                     assert 'ecp' in self.user_input
@@ -206,7 +202,8 @@ cannot be determined. Rerun without `$molecule read`."""
                         # assigned ECP centers. Filter out the
                         # remaining entries, of which there should
                         # only be one.
-                        remainder = self.charge - user_charge - self.coreelectrons.sum()
+                        core_sum = self.coreelectrons.sum() if hasattr(self, 'coreelectrons') else 0
+                        remainder = self.charge - user_charge - core_sum
                         entries = [entry
                                    for entry in self.user_input['ecp']
                                    if entry[2] == 0]
@@ -214,11 +211,13 @@ cannot be determined. Rerun without `$molecule read`."""
                             assert len(entries) == 1
                             element, _, ncore = entries[0]
                             assert ncore == 0
-                            self._assign_coreelectrons_to_element(element, remainder, True)
+                            self._assign_coreelectrons_to_element(
+                                    element, remainder, ncore_is_total_count=True)
                 elif not ecp_is_gen and has_iprint:
+                    atomsymbols = [self.table.element[atomno] for atomno in self.atomnos]
                     for i in range(self.natom):
-                        if self.atomsymbols[i] in self.possible_ecps:
-                            self.coreelectrons[i] = self.possible_ecps[self.atomsymbols[i]]
+                        if atomsymbols[i] in self.possible_ecps:
+                            self.coreelectrons[i] = self.possible_ecps[atomsymbols[i]]
                 else:
                     assert ecp_is_gen and has_iprint
                     for entry in self.user_input['ecp']:
@@ -339,6 +338,49 @@ cannot be determined. Rerun without `$molecule read`."""
             colcounter += self.ncolsblock
         return nparray
 
+    def parse_orbital_energies_and_symmetries(self, inputfile):
+        """Parse the 'Orbital Energies (a.u.)' block appearing after SCF converges,
+        which optionally includes MO symmetries. Based upon the
+        Occupied/Virtual labeling, the HOMO is also parsed.
+        """
+        energies = []
+        symbols = []
+
+        line = next(inputfile)
+        # Sometimes Q-Chem gets a little confused...
+        while "MOs" not in line:
+            line = next(inputfile)
+        line = next(inputfile)
+
+        # The end of the block is either a blank line or only dashes.
+        while not self.re_dashes_and_spaces.search(line) \
+              and not 'Warning : Irrep of orbital' in line:
+            if 'Occupied' in line or 'Virtual' in line:
+                # A nice trick to find where the HOMO is.
+                if 'Virtual' in line:
+                    homo = len(energies) - 1
+                line = next(inputfile)
+            tokens = line.split()
+            # If the line contains letters, it must be the MO
+            # symmetries. Otherwise, it's the energies.
+            if re.search("[a-zA-Z]", line):
+                symbols.extend(tokens[1::2])
+            else:
+                for e in tokens:
+                    try:
+                        energy = utils.convertor(self.float(e), 'hartree', 'eV')
+                    except ValueError:
+                        energy = numpy.nan
+                    energies.append(energy)
+            line = next(inputfile)
+
+        # MO symmetries are either not present or there is one for each MO
+        # (energy).
+        assert len(symbols) in (0, len(energies))
+
+        return energies, symbols, homo
+
+
     def generate_atom_map(self):
         """Generate the map to go from Q-Chem atom numbering:
         'C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'H1', 'H2', 'H3', 'H4', 'C7', ...
@@ -374,24 +416,18 @@ cannot be determined. Rerun without `$molecule read`."""
                 histogram[element] = 1
         return histogram
 
-    def _assign_coreelectrons_to_element(self, element, ncore, divide_by_count=False):
-        """Assign to all instances of the element, because mixed usage isn't
-        allowed within elements.
-        """
-        mask = [element == possible_element
-                for possible_element in self.atomsymbols]
-        indices = [i for (i, x) in enumerate(mask) if x]
-        count = sum(mask)
-        if divide_by_count:
-            ncore = ncore // count
-        self.coreelectrons[indices] = ncore
-
     def extract(self, inputfile, line):
         """Extract information from the file object inputfile."""
 
-        # Extract the version number first
-        if 'Q-Chem,' in line:
-            self.metadata["package_version"] = line.split()[1][:-1]
+        # Extract the version number and optionally the version
+        # control info.
+        if "Q-Chem" in line:
+            match = re.search(r"Q-Chem\s([0-9\.]*)\sfor", line)
+            if match:
+                self.metadata["package_version"] = match.groups()[0]
+        # Don't add revision information to the main package version for now.
+        if "SVN revision" in line:
+            revision = line.split()[3]
 
         # Disable/enable parsing for fragment sections.
         if any(message in line for message in self.fragment_section_headers):
@@ -625,6 +661,10 @@ cannot be determined. Rerun without `$molecule read`."""
                         ncore = self.table.number[element] - valence
                         self.possible_ecps[element] = ncore
                     line = next(inputfile)
+
+            if 'TIME STEP #' in line:
+                tokens = line.split()
+                self.append_attribute('time', float(tokens[8]))
 
             # Extract the atomic numbers and coordinates of the atoms.
             if 'Standard Nuclear Orientation (Angstroms)' in line:
@@ -953,11 +993,11 @@ cannot be determined. Rerun without `$molecule read`."""
                     # ground state energy, rather than just the EE;
                     # this will be more accurate.
                     if 'Total energy for state' in line:
-                        energy = utils.convertor(float(line.split()[5]), 'hartree', 'cm-1')
-                        etenergy = energy - utils.convertor(self.scfenergies[-1], 'eV', 'cm-1')
+                        energy = utils.convertor(float(line.split()[5]), 'hartree', 'wavenumber')
+                        etenergy = energy - utils.convertor(self.scfenergies[-1], 'eV', 'wavenumber')
                         etenergies.append(etenergy)
                     # if 'excitation energy' in line:
-                    #     etenergy = utils.convertor(float(line.split()[-1]), 'eV', 'cm-1')
+                    #     etenergy = utils.convertor(float(line.split()[-1]), 'eV', 'wavenumber')
                     #     etenergies.append(etenergy)
                     if 'Multiplicity' in line:
                         etsym = line.split()[1]
@@ -1031,7 +1071,7 @@ cannot be determined. Rerun without `$molecule read`."""
                 self.polarizabilities.append(numpy.array(polarizability))
 
             # Molecular orbital energies and symmetries.
-            if 'Orbital Energies (a.u.) and Symmetries' in line:
+            if line.strip() == 'Orbital Energies (a.u.) and Symmetries':
 
                 #  --------------------------------------------------------------
                 #              Orbital Energies (a.u.) and Symmetries
@@ -1084,86 +1124,25 @@ cannot be determined. Rerun without `$molecule read`."""
 
                 self.skip_line(inputfile, 'dashes')
                 line = next(inputfile)
-                # Sometimes Q-Chem gets a little confused...
-                while 'Warning : Irrep of orbital' in line:
-                    line = next(inputfile)
-                line = next(inputfile)
-                energies_alpha = []
-                symbols_alpha = []
-                if self.unrestricted:
-                    energies_beta = []
-                    symbols_beta = []
-                line = next(inputfile)
-
-                # The end of the block is either a blank line or only dashes.
-                while not self.re_dashes_and_spaces.search(line):
-                    if 'Occupied' in line or 'Virtual' in line:
-                        # A nice trick to find where the HOMO is.
-                        if 'Virtual' in line:
-                            self.homos = [len(energies_alpha)-1]
-                        line = next(inputfile)
-                    # Parse the energies and symmetries in pairs of lines.
-                    # energies = [utils.convertor(energy, 'hartree', 'eV')
-                    #             for energy in map(float, line.split())]
-                    # This convoluted bit handles '*******' when present.
-                    energies = []
-                    energy_line = line.split()
-                    for e in energy_line:
-                        try:
-                            energy = utils.convertor(self.float(e), 'hartree', 'eV')
-                        except ValueError:
-                            energy = numpy.nan
-                        energies.append(energy)
-                    energies_alpha.extend(energies)
-                    line = next(inputfile)
-                    symbols = line.split()[1::2]
-                    symbols_alpha.extend(symbols)
-                    line = next(inputfile)
-
-                line = next(inputfile)
+                energies_alpha, symbols_alpha, homo_alpha = self.parse_orbital_energies_and_symmetries(inputfile)
                 # Only look at the second block if doing an unrestricted calculation.
                 # This might be a problem for ROHF/ROKS.
                 if self.unrestricted:
-                    assert 'Beta MOs' in line
-                    self.skip_line(inputfile, '-- Occupied --')
-                    line = next(inputfile)
-                    while not self.re_dashes_and_spaces.search(line):
-                        if 'Occupied' in line or 'Virtual' in line:
-                            # This will definitely exist, thanks to the above block.
-                            if 'Virtual' in line:
-                                if len(self.homos) == 1:
-                                    self.homos.append(len(energies_beta)-1)
-                            line = next(inputfile)
-                        energies = []
-                        energy_line = line.split()
-                        for e in energy_line:
-                            try:
-                                energy = utils.convertor(self.float(e), 'hartree', 'eV')
-                            except ValueError:
-                                energy = numpy.nan
-                            energies.append(energy)
-                        energies_beta.extend(energies)
-                        line = next(inputfile)
-                        symbols = line.split()[1::2]
-                        symbols_beta.extend(symbols)
-                        line = next(inputfile)
+                    energies_beta, symbols_beta, homo_beta = self.parse_orbital_energies_and_symmetries(inputfile)
 
                 # For now, only keep the last set of MO energies, even though it is
                 # printed at every step of geometry optimizations and fragment jobs.
-                self.moenergies = [[]]
-                self.mosyms = [[]]
-                self.moenergies[0] = numpy.array(energies_alpha)
-                self.mosyms[0] = symbols_alpha
+                self.set_attribute('moenergies', [numpy.array(energies_alpha)])
+                self.set_attribute('homos', [homo_alpha])
+                self.set_attribute('mosyms', [symbols_alpha])
                 if self.unrestricted:
-                    self.moenergies.append([])
-                    self.mosyms.append([])
-                    self.moenergies[1] = numpy.array(energies_beta)
-                    self.mosyms[1] = symbols_beta
+                    self.moenergies.append(numpy.array(energies_beta))
+                    self.homos.append(homo_beta)
+                    self.mosyms.append(symbols_beta)
 
                 self.set_attribute('nmo', len(self.moenergies[0]))
 
             # Molecular orbital energies, no symmetries.
-
             if line.strip() == 'Orbital Energies (a.u.)':
 
                 # In the case of no orbital symmetries, the beta spin block is not
@@ -1199,63 +1178,22 @@ cannot be determined. Rerun without `$molecule read`."""
                 #   0.138
                 #  --------------------------------------------------------------
 
-                self.skip_lines(inputfile, ['dashes', 'blank'])
+                self.skip_line(inputfile, 'dashes')
                 line = next(inputfile)
-                energies_alpha = []
-                if self.unrestricted:
-                    energies_beta = []
-                line = next(inputfile)
-
-                # The end of the block is either a blank line or only dashes.
-                while not self.re_dashes_and_spaces.search(line):
-                    if 'Occupied' in line or 'Virtual' in line:
-                        # A nice trick to find where the HOMO is.
-                        if 'Virtual' in line:
-                            self.homos = [len(energies_alpha)-1]
-                        line = next(inputfile)
-                    energies = []
-                    energy_line = line.split()
-                    for e in energy_line:
-                        try:
-                            energy = utils.convertor(self.float(e), 'hartree', 'eV')
-                        except ValueError:
-                            energy = numpy.nan
-                        energies.append(energy)
-                    energies_alpha.extend(energies)
-                    line = next(inputfile)
-
-                line = next(inputfile)
+                energies_alpha, _, homo_alpha = self.parse_orbital_energies_and_symmetries(inputfile)
                 # Only look at the second block if doing an unrestricted calculation.
                 # This might be a problem for ROHF/ROKS.
                 if self.unrestricted:
-                    assert 'Beta MOs' in line
-                    self.skip_line(inputfile, '-- Occupied --')
-                    line = next(inputfile)
-                    while not self.re_dashes_and_spaces.search(line):
-                        if 'Occupied' in line or 'Virtual' in line:
-                            # This will definitely exist, thanks to the above block.
-                            if 'Virtual' in line:
-                                if len(self.homos) == 1:
-                                    self.homos.append(len(energies_beta)-1)
-                            line = next(inputfile)
-                        energies = []
-                        energy_line = line.split()
-                        for e in energy_line:
-                            try:
-                                energy = utils.convertor(self.float(e), 'hartree', 'eV')
-                            except ValueError:
-                                energy = numpy.nan
-                            energies.append(energy)
-                        energies_beta.extend(energies)
-                        line = next(inputfile)
+                    energies_beta, _, homo_beta = self.parse_orbital_energies_and_symmetries(inputfile)
 
                 # For now, only keep the last set of MO energies, even though it is
                 # printed at every step of geometry optimizations and fragment jobs.
-                self.moenergies = [[]]
-                self.moenergies[0] = numpy.array(energies_alpha)
+                self.set_attribute('moenergies', [numpy.array(energies_alpha)])
+                self.set_attribute('homos', [homo_alpha])
                 if self.unrestricted:
-                    self.moenergies.append([])
-                    self.moenergies[1] = numpy.array(energies_beta)
+                    self.moenergies.append(numpy.array(energies_beta))
+                    self.homos.append(homo_beta)
+
                 self.set_attribute('nmo', len(self.moenergies[0]))
 
             # Molecular orbital coefficients.
@@ -1562,7 +1500,7 @@ cannot be determined. Rerun without `$molecule read`."""
                     if not hasattr(self, 'zpe'):
                         # Convert from kcal/mol to Hartree/particle.
                         self.zpe = utils.convertor(float(line.split()[4]),
-                                                   'kcal', 'hartree')
+                                                   'kcal/mol', 'hartree')
                     atommasses = []
                     while 'Translational Enthalpy' not in line:
                         if 'Has Mass' in line:
@@ -1580,16 +1518,19 @@ cannot be determined. Rerun without `$molecule read`."""
                 if not hasattr(self, 'enthalpy'):
                     enthalpy = float(line.split()[2])
                     self.enthalpy = utils.convertor(enthalpy,
-                                                    'kcal', 'hartree')
+                                                    'kcal/mol', 'hartree')
                 line = next(inputfile)
                 assert 'Total Entropy' in line
                 if not hasattr(self, 'entropy'):
                     entropy = float(line.split()[2]) * self.temperature / 1000
                     # This is the *temperature dependent* entropy.
                     self.entropy = utils.convertor(entropy,
-                                                   'kcal', 'hartree')
+                                                   'kcal/mol', 'hartree')
                 if not hasattr(self, 'freeenergy'):
                     self.freeenergy = self.enthalpy - self.entropy
+
+        if line[:16] == ' Total job time:':
+            self.metadata['success'] = True
 
         # TODO:
         # 'enthalpy' (incorrect)

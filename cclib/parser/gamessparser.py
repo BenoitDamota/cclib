@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (c) 2017, the cclib development team
+# Copyright (c) 2018, the cclib development team
 #
 # This file is part of cclib (http://cclib.github.io) and is distributed under
 # the terms of the BSD 3-Clause License.
@@ -83,9 +83,20 @@ class GAMESS(logfileparser.Logfile):
     def extract(self, inputfile, line):
         """Extract information from the file object inputfile."""
         
-        # extract the version number first
-        if line.find("GAMESS VERSION") >= 0:
-            self.metadata["package_version"] = line.split()[4] + line.split()[5] + line.split()[6]
+        # Extract the version number. If the calculation is from
+        # Firefly, its version number comes before a line that looks
+        # like the normal GAMESS version number...
+        if "Firefly version" in line:
+            match = re.search(r"Firefly version\s([\d.]*)\D*(\d*)\s*\*", line)
+            if match:
+                version, build = match.groups()
+                package_version = "{}.b{}".format(version, build)
+                self.metadata["package_version"] = package_version
+        if "GAMESS VERSION" in line:
+            # ...so avoid overwriting it if Firefly already set this field.
+            if "package_version" not in self.metadata:
+                tokens = line.split()
+                self.metadata["package_version"] = ' '.join(tokens[4:-1])
 
         if line[1:12] == "INPUT CARD>":
             return
@@ -287,8 +298,16 @@ class GAMESS(logfileparser.Logfile):
             mult = int(line.split()[-1])
             self.set_attribute('mult', mult)
 
-        # etenergies (originally used only for CIS runs, but now also TD-DFT)
-        if "EXCITATION ENERGIES" in line and line.find("DONE WITH") < 0:
+        # Electronic transitions (etenergies) for CIS runs and TD-DFT, which
+        # have very similar outputs. The outputs EOM look very differentm, though.
+        #
+        #  ---------------------------------------------------------------------
+        #                    CI-SINGLES EXCITATION ENERGIES
+        #  STATE       HARTREE        EV      KCAL/MOL       CM-1         NM
+        #  ---------------------------------------------------------------------
+        #   1A''   0.1677341781     4.5643    105.2548      36813.40     271.64
+        #   ...
+        if re.match("(CI-SINGLES|TDDFT) EXCITATION ENERGIES", line.strip()):
 
             if not hasattr(self, "etenergies"):
                 self.etenergies = []
@@ -310,7 +329,7 @@ class GAMESS(logfileparser.Logfile):
                 # Take hartree value with more numbers, and convert.
                 # Note that the values listed after this are also less exact!
                 etenergy = float(broken[1])
-                self.etenergies.append(utils.convertor(etenergy, "hartree", "cm-1"))
+                self.etenergies.append(utils.convertor(etenergy, "hartree", "wavenumber"))
                 if get_etosc:
                     etosc = float(broken[-1])
                     self.etoscs.append(etosc)
@@ -437,7 +456,7 @@ class GAMESS(logfileparser.Logfile):
 
                 self.updateprogress(inputfile, "Excited States")
 
-                etenergy = utils.convertor(float(line.split()[-2]), "eV", "cm-1")
+                etenergy = utils.convertor(float(line.split()[-2]), "eV", "wavenumber")
                 etoscs = float(next(inputfile).split()[-1])
                 self.etenergies.append(etenergy)
                 self.etoscs.append(etoscs)
@@ -1439,3 +1458,8 @@ class GAMESS(logfileparser.Logfile):
                     i, j = coord_to_idx[tokens[1][0]], coord_to_idx[tokens[1][1]]
                     polarizability[i, j] = tokens[3]
             self.polarizabilities.append(polarizability)
+
+        if line[:30] == ' ddikick.x: exited gracefully.'\
+                or line[:41] == ' EXECUTION OF FIREFLY TERMINATED NORMALLY'\
+                or line[:40] == ' EXECUTION OF GAMESS TERMINATED NORMALLY':
+            self.metadata['success'] = True

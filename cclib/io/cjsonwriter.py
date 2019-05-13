@@ -7,22 +7,20 @@
 
 """A writer for chemical JSON (CJSON) files."""
 
-try:
-    import openbabel as ob
-    _has_openbabel = True
-except ImportError:
-    _has_openbabel = False
-
 import os.path
 import json
 import numpy as np
 
 from cclib.io import filewriter
 from cclib.parser.data import ccData
+from cclib.parser.utils import find_package
+
+_has_openbabel = find_package("openbabel")
 
 
 class CJSON(filewriter.Writer):
     """A writer for chemical JSON (CJSON) files."""
+
     def __init__(self, ccdata, terse=False, *args, **kwargs):
         """Initialize the chemical JSON writer object.
 
@@ -30,7 +28,6 @@ class CJSON(filewriter.Writer):
           ccdata - An instance of ccData, parsed from a logfile.
         """
 
-        # Call the __init__ method of the superclass
         super(CJSON, self).__init__(ccdata, terse=terse, *args, **kwargs)
 
     def pathname(self, path):
@@ -38,9 +35,8 @@ class CJSON(filewriter.Writer):
         name = os.path.basename(os.path.splitext(path)[0])
         return name
 
-    def generate_repr(self):
-        """Generate the CJSON representation of the logfile data."""
-
+    def as_dict(self):
+        """ Build a Python dict with the CJSON data"""
         cjson_dict = dict()
         # Need to decide on a number format.
         cjson_dict['chemical json'] = 0
@@ -53,50 +49,53 @@ class CJSON(filewriter.Writer):
             cjson_dict['inchi'] = self.pbmol.write('inchi')
             cjson_dict['inchikey'] = self.pbmol.write('inchikey')
             cjson_dict['formula'] = self.pbmol.formula
-        # Incorporate Unit Cell into the chemical JSON.
+        # TODO Incorporate unit cell information.
 
-        # Iterate through the attribute list present in ccData. Depending on the
-        # availability of the attribute add it at the right 'level'.
-        for attributeName, Value in ccData._attributes.items():
-            if not hasattr(self.ccdata, attributeName):
+        # Iterate through the attribute list present in ccData. Depending on
+        # the availability of the attribute add it at the right 'level'.
+        for attribute_name, v in ccData._attributes.items():
+            if not hasattr(self.ccdata, attribute_name):
                 continue
 
-            attributePath = Value.attributePath.split(":")
+            attribute_path = v.attribute_path.split(":")
 
             # Depth of the attribute in the CJSON.
-            levels = len(attributePath)
+            levels = len(attribute_path)
 
             # The attributes which haven't been included in the CJSON format.
-            if attributePath[0] == 'N/A':
+            if attribute_path[0] == 'N/A':
                 continue
 
-            if attributePath[0] not in cjson_dict:
-                cjson_dict[attributePath[0]] = dict()
-            l1_data_object = cjson_dict[attributePath[0]]
+            if attribute_path[0] not in cjson_dict:
+                cjson_dict[attribute_path[0]] = dict()
+            l1_data_object = cjson_dict[attribute_path[0]]
 
-            # 'moments' and 'atomcoords' key will contain processed data obtained from the output file.
-            if attributeName == 'moments' or attributeName == 'atomcoords' :
-                if attributeName == 'moments':
-                    cjson_dict['properties'][ccData._attributes['moments'].jsonKey] = self._calculate_total_dipole_moment()
+            # 'moments' and 'atomcoords' key will contain processed data
+            # obtained from the output file. TODO rewrite this
+            if attribute_name in ('moments', 'atomcoords'):
+                if attribute_name == 'moments':
+                    dipole_moment = self._calculate_total_dipole_moment()
+                    if dipole_moment is not None:
+                        cjson_dict['properties'][ccData._attributes['moments'].json_key] = dipole_moment
                 else:
                     cjson_dict['atoms']['coords'] = dict()
                     cjson_dict['atoms']['coords']['3d'] = self.ccdata.atomcoords[-1].flatten().tolist()
                 continue
 
             if levels == 1:
-                self.set_JSON_attribute(l1_data_object, attributeName)
+                self.set_JSON_attribute(l1_data_object, attribute_name)
             elif levels >= 2:
-                if attributePath[1] not in l1_data_object:
-                    l1_data_object[attributePath[1]] = dict()
-                l2_data_object = l1_data_object[attributePath[1]]
+                if attribute_path[1] not in l1_data_object:
+                    l1_data_object[attribute_path[1]] = dict()
+                l2_data_object = l1_data_object[attribute_path[1]]
 
                 if levels == 2:
-                    self.set_JSON_attribute(l2_data_object, attributeName)
+                    self.set_JSON_attribute(l2_data_object, attribute_name)
                 elif levels == 3:
-                    if attributePath[2] not in l2_data_object:
-                        l2_data_object[attributePath[2]] = dict()
-                    l3_data_object = l2_data_object[attributePath[2]]
-                    self.set_JSON_attribute(l3_data_object, attributeName)
+                    if attribute_path[2] not in l2_data_object:
+                        l2_data_object[attribute_path[2]] = dict()
+                    l3_data_object = l2_data_object[attribute_path[2]]
+                    self.set_JSON_attribute(l3_data_object, attribute_name)
 
         # Attributes which are not directly obtained from the output files.
         if hasattr(self.ccdata, 'moenergies') and hasattr(self.ccdata, 'homos'):
@@ -131,14 +130,18 @@ class CJSON(filewriter.Writer):
             cjson_dict['bonds']['connections'] = dict()
             cjson_dict['bonds']['connections']['index'] = []
             for bond in self.bond_connectivities:
-                cjson_dict['bonds']['connections']['index'].append(bond[0] + 1)
-                cjson_dict['bonds']['connections']['index'].append(bond[1] + 1)
+                cjson_dict['bonds']['connections']['index'].append(bond[0])
+                cjson_dict['bonds']['connections']['index'].append(bond[1])
             cjson_dict['bonds']['order'] = [bond[2] for bond in self.bond_connectivities]
 
         if _has_openbabel:
             cjson_dict['properties']['molecular mass'] = self.pbmol.molwt
             cjson_dict['diagram'] = self.pbmol.write(format='svg')
+        return cjson_dict
 
+    def generate_repr(self):
+        """Generate the CJSON representation of the logfile data."""
+        cjson_dict = self.as_dict()
         if self.terse:
             return json.dumps(cjson_dict, cls=NumpyAwareJSONEncoder)
         else:
@@ -150,12 +153,13 @@ class CJSON(filewriter.Writer):
             object: Python dictionary which is being appended with the key value.
             key: cclib attribute name.
 
-        Returns: 
+        Returns:
             None. The dictionary is modified to contain the attribute with the
                  cclib keyname as key
         """
         if hasattr(self.ccdata, key):
-            object[ccData._attributes[key].jsonKey] = getattr(self.ccdata, key)
+            object[ccData._attributes[key].json_key] = getattr(self.ccdata, key)
+
 
 class NumpyAwareJSONEncoder(json.JSONEncoder):
     """A encoder for numpy.ndarray's obtained from the cclib attributes.
@@ -174,6 +178,7 @@ class NumpyAwareJSONEncoder(json.JSONEncoder):
 
 
 class JSONIndentEncoder(json.JSONEncoder):
+
     def __init__(self, *args, **kwargs):
         super(JSONIndentEncoder, self).__init__(*args, **kwargs)
         self.current_indent = 0
@@ -190,7 +195,7 @@ class JSONIndentEncoder(json.JSONEncoder):
             output = []
             if primitives_only:
                 for item in o:
-                    output.append(json.dumps(item,  cls=NumpyAwareJSONEncoder))
+                    output.append(json.dumps(item, cls=NumpyAwareJSONEncoder))
                 return "[ " + ", ".join(output) + " ]"
             else:
                 self.current_indent += self.indent
@@ -211,6 +216,9 @@ class JSONIndentEncoder(json.JSONEncoder):
             self.current_indent_str = "".join([" " for x in range(self.current_indent)])
             return "{\n" + ",\n".join(output) + "\n" + self.current_indent_str + "}"
         elif isinstance(o, np.generic):
-            return json.dumps(np.asscalar(o), cls=NumpyAwareJSONEncoder)
+            return json.dumps(o.item(), cls=NumpyAwareJSONEncoder)
         else:
             return json.dumps(o, cls=NumpyAwareJSONEncoder)
+
+
+del find_package

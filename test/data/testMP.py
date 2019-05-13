@@ -12,6 +12,7 @@ import unittest
 
 import numpy
 
+from skip import skipForParser
 
 __filedir__ = os.path.realpath(os.path.dirname(__file__))
 
@@ -20,7 +21,7 @@ class GenericMP2Test(unittest.TestCase):
     """Generic MP2 unittest"""
 
     level = 2
-    
+
     def testsizeandshape(self):
         """(MP2) Are the dimensions of mpenergies correct?"""
         self.assertEqual(self.data.mpenergies.shape,
@@ -32,7 +33,7 @@ class GenericMP2Test(unittest.TestCase):
             corrections = self.data.mpenergies[:,0] - self.data.scfenergies
         else:
             corrections = self.data.mpenergies[:,self.level-2] - self.data.mpenergies[:,self.level-3]
-        self.failUnless(numpy.alltrue(corrections < 0.0))
+        self.assertTrue(numpy.alltrue(corrections < 0.0))
         
 class GenericMP3Test(GenericMP2Test):
     """Generic MP3 unittest"""
@@ -56,11 +57,11 @@ class GaussianMP2Test(GenericMP2Test):
         
     def testnocoeffs(self):
         """Are natural orbital coefficients the right size?"""
-        self.assertEquals(self.data.nocoeffs.shape, (self.data.nmo, self.data.nbasis))
+        self.assertEqual(self.data.nocoeffs.shape, (self.data.nmo, self.data.nbasis))
 
     def testnocoeffs(self):
         """Are natural orbital occupation numbers the right size?"""
-        self.assertEquals(self.data.nooccnos.shape, (self.data.nmo, ))
+        self.assertEqual(self.data.nooccnos.shape, (self.data.nmo, ))
 
 class GaussianMP3Test(GenericMP2Test):
     """Customized MP3 unittest"""

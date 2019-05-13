@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (c) 2018, the cclib development team
+# Copyright (c) 2019, the cclib development team
 #
 # This file is part of cclib (http://cclib.github.io) and is distributed under
 # the terms of the BSD 3-Clause License.
@@ -36,7 +36,7 @@ def setup_cclib():
 
     setuptools.setup(
         name="cclib",
-        version="1.5.3",
+        version="1.6.1",
         url="http://cclib.github.io/",
         author="cclib development team",
         author_email="cclib-users@lists.sourceforge.net",
@@ -47,15 +47,19 @@ def setup_cclib():
         long_description="\n".join(doclines[2:]),
         classifiers=classifiers.split("\n"),
         platforms=["Any."],
-        packages=setuptools.find_packages('cclib'),
-        package_dir={'': 'cclib'},
+        packages=setuptools.find_packages(exclude=['*test*']),
         entry_points={
             'console_scripts': [
+                'ccframe=cclib.scripts.ccframe:main',
                 'ccget=cclib.scripts.ccget:ccget',
                 'ccwrite=cclib.scripts.ccwrite:main',
                 'cda=cclib.scripts.cda:main'
             ]
-        }
+        },
+        install_requires=[
+            "numpy",
+            "six",
+        ],
 
     )
 

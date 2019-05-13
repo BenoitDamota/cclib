@@ -72,12 +72,17 @@ class XYZ(filewriter.Writer):
         for i in indices:
             xyzblock.append(self._xyz_from_ccdata(i))
 
+        # Ensure an extra newline at the very end.
+        xyzblock.append('')
+
         return '\n'.join(xyzblock)
 
     def _xyz_from_ccdata(self, index):
         """Create an XYZ file of the geometry at the given index."""
 
         atomcoords = self.ccdata.atomcoords[index]
+        existing_comment = "" if not self.ccdata.metadata["comments"] \
+            else self.ccdata.metadata["comments"][index]
 
         # Create a comment derived from the filename and the index.
         if index == -1:
@@ -88,6 +93,12 @@ class XYZ(filewriter.Writer):
             comment = "{}: Geometry {}".format(self.jobfilename, geometry_num)
         else:
             comment = "Geometry {}".format(geometry_num)
+        # Wrap the geometry number part of the comment in square brackets,
+        # prefixing it with one previously parsed if it existed.
+        if existing_comment:
+            comment = "{} [{}]".format(existing_comment, comment)
+        else:
+            comment = "[{}]".format(comment)
 
         atom_template = '{:3s} {:15.10f} {:15.10f} {:15.10f}'
         block = []

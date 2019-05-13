@@ -24,7 +24,8 @@ class GenericTDTest(unittest.TestCase):
     number = 5
     expected_l_max = 41000
 
-    @skipForParser('DALTON', 'etoscs are not parsed')
+    @skipForParser('Molcas','The parser is still being developed so we skip this test')
+    @skipForParser('Turbomole','The parser is still being developed so we skip this test')
     def testenergies(self):
         """Is the l_max reasonable?"""
 
@@ -35,35 +36,47 @@ class GenericTDTest(unittest.TestCase):
         idx_lambdamax = numpy.argmax(self.data.etoscs)
         self.assertAlmostEqual(self.data.etenergies[idx_lambdamax], self.expected_l_max, delta=5000)
 
-    @skipForParser('DALTON', 'Oscillator strengths will have to be calculated, not just parsed.')
+    @skipForParser('Molcas','The parser is still being developed so we skip this test')
+    @skipForParser('Turbomole','The parser is still being developed so we skip this test')
     def testoscs(self):
         """Is the maximum of etoscs in the right range?"""
         self.assertEqual(len(self.data.etoscs), self.number)
         self.assertAlmostEqual(max(self.data.etoscs), 0.67, delta=0.1)
 
-    @skipForParser('DALTON', '???')
+    @skipForParser('Molcas','The parser is still being developed so we skip this test')
+    @skipForParser('Turbomole','The parser is still being developed so we skip this test')
     def testsecs(self):
         """Is the sum of etsecs close to 1?"""
         self.assertEqual(len(self.data.etsecs), self.number)
-        lowestEtrans = self.data.etsecs[1]
+        lowestEtrans = self.data.etsecs[numpy.argmin(self.data.etenergies)]
         sumofsec = sum([z*z for (x, y, z) in lowestEtrans])
         self.assertAlmostEqual(sumofsec, 1.0, delta=0.16)
 
-    @skipForParser('DALTON', '???')
+    @skipForParser('DALTON', 'This is true for calculations without symmetry, but not with?')
+    @skipForParser('Molcas','The parser is still being developed so we skip this test')
+    @skipForParser('Turbomole','The parser is still being developed so we skip this test')
     def testsecs_transition(self):
         """Is the lowest E transition from the HOMO or to the LUMO?"""
-        idx_minenergy = numpy.argmin(self.data.etoscs)
-        sec = self.data.etsecs[idx_minenergy]
-        t = [(c*c, s, e) for (s, e, c) in sec]
-        t.sort()
-        t.reverse()
+        lowestEtrans = self.data.etsecs[numpy.argmin(self.data.etenergies)]
+        t = list(reversed(sorted([(c*c, s, e) for (s, e, c) in lowestEtrans])))
         self.assert_(t[0][1][0] == self.data.homos[0] or
-                     t[0][2][0] == self.data.homos[0]+1, t[0])
+                     t[0][2][0] == self.data.homos[0] + 1, t[0])
 
+    @skipForParser('Molcas','The parser is still being developed so we skip this test')    
+    @skipForParser('Turbomole','The parser is still being developed so we skip this test')
     def testsymsnumber(self):
         """Is the length of etsyms correct?"""
         self.assertEqual(len(self.data.etsyms), self.number)
 
+    @skipForParser('ADF', 'etrotats are not yet implemented')
+    @skipForParser('DALTON', 'etrotats are not yet implemented')
+    @skipForParser('GAMESS', 'etrotats are not yet implemented')
+    @skipForParser('GAMESSUK', 'etrotats are not yet implemented')
+    @skipForParser('Jaguar', 'etrotats are not yet implemented')
+    @skipForParser('QChem', 'Q-Chem cannot calculate rotatory strengths')
+    def testrotatsnumber(self):
+        """Is the length of etrotats correct?"""
+        self.assertEqual(len(self.data.etrotats), self.number)
 
 class ADFTDDFTTest(GenericTDTest):
     """Customized time-dependent DFT unittest"""
@@ -89,10 +102,6 @@ class GaussianTDDFTTest(GenericTDTest):
     """Customized time-dependent HF/DFT unittest"""
 
     expected_l_max = 48000
-
-    def testrotatsnumber(self):
-        """Is the length of etrotats correct?"""
-        self.assertEqual(len(self.data.etrotats), self.number)
 
 
 class GAMESSUSTDDFTTest(GenericTDTest):
@@ -121,6 +130,31 @@ class OrcaTDDFTTest(GenericTDTest):
         """Is the maximum of etoscs in the right range?"""
         self.assertEqual(len(self.data.etoscs), self.number)
         self.assertAlmostEqual(max(self.data.etoscs), .09, delta=0.01)
+
+
+class QChemTDDFTTest(GenericTDTest):
+    """Customized time-dependent HF/DFT unittest"""
+
+    number = 10
+    expected_l_max = 48000
+
+    def testoscs(self):
+        """Is the maximum of etoscs in the right range?"""
+        self.assertEqual(len(self.data.etoscs), self.number)
+        self.assertAlmostEqual(max(self.data.etoscs), 0.9, delta=0.1)
+
+
+class GenericTDDFTtrpTest(GenericTDTest):
+    """Generic time-dependent HF/DFT (triplet) unittest"""
+
+    number = 5
+    expected_l_max = 24500
+
+    def testoscs(self):
+        """Triplet excitations should be disallowed."""
+        self.assertEqual(len(self.data.etoscs), self.number)
+        self.assertAlmostEqual(max(self.data.etoscs), 0.0, delta=0.01)
+
 
 class OrcaROCISTest(GenericTDTest):
     """Customized test for ROCIS"""
@@ -151,29 +185,9 @@ class OrcaROCISTest(GenericTDTest):
         """ROCIS does not form singly excited configurations (secs)"""
         pass
 
-
-class QChemTDDFTTest(GenericTDTest):
-    """Customized time-dependent HF/DFT unittest"""
-
-    number = 10
-    expected_l_max = 48000
-
-    def testoscs(self):
-        """Is the maximum of etoscs in the right range?"""
-        self.assertEqual(len(self.data.etoscs), self.number)
-        self.assertAlmostEqual(max(self.data.etoscs), .9, delta=0.1)
-
-
-class GenericTDDFTtrpTest(GenericTDTest):
-    """Generic time-dependent HF/DFT (triplet) unittest"""
-
-    number = 5
-    expected_l_max = 24500
-
-    def testoscs(self):
-        """Triplet excitations should be disallowed."""
-        self.assertEqual(len(self.data.etoscs), self.number)
-        self.assertAlmostEqual(max(self.data.etoscs), 0.0, delta=0.01)
+    def testrotatsnumber(self):
+        """ROCIS does not calculate rotatory strengths"""
+        pass
 
 
 if __name__=="__main__":

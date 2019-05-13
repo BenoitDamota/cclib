@@ -11,6 +11,7 @@
 from __future__ import print_function
 
 import numpy
+import re
 
 from cclib.parser import logfileparser
 from cclib.parser import utils
@@ -49,9 +50,135 @@ class ORCA(logfileparser.Logfile):
     def extract(self, inputfile, line):
         """Extract information from the file object inputfile."""
 
-        #  extract the version number first
-        if "Program Version" in line:
+        # Extract the version number.
+        if "Program Version" == line.strip()[:15]:
             self.metadata["package_version"] = line.split()[2]
+
+        # ================================================================================
+        #                                         WARNINGS
+        #                        Please study these warnings very carefully!
+        # ================================================================================
+        #
+        # Warning: TCutStore was < 0. Adjusted to Thresh (uncritical)
+        #
+        # WARNING: your system is open-shell and RHF/RKS was chosen
+        #   ===> : WILL SWITCH to UHF/UKS
+        #
+        #
+        # INFO   : the flag for use of LIBINT has been found!
+        #
+        # ================================================================================
+        if "WARNINGS" == line.strip():
+            self.skip_lines(inputfile, ['text', '=', 'blank'])
+            if 'warnings' not in self.metadata:
+                self.metadata['warnings'] = []
+            if 'info' not in self.metadata:
+                self.metadata['info'] = []
+
+            line = next(inputfile)
+            while line[0] != '=':
+                if line.lower()[:7] == 'warning':
+                    self.metadata['warnings'].append('')
+                    while len(line) > 1:
+                        self.metadata['warnings'][-1] += line[9:].strip()
+                        line = next(inputfile)
+                elif line.lower()[:4] == 'info':
+                    self.metadata['info'].append('')
+                    while len(line) > 1:
+                        self.metadata['info'][-1] += line[9:].strip()
+                        line = next(inputfile)
+                line = next(inputfile)
+
+        # ================================================================================
+        #                                        INPUT FILE
+        # ================================================================================
+        # NAME = input.dat
+        # |  1> %pal nprocs 4 end
+        # |  2> ! B3LYP def2-svp
+        # |  3> ! Grid4
+        # |  4>
+        # |  5> *xyz 0 3
+        # |  6>     O   0   0   0
+        # |  7>     O   0   0   1.5
+        # |  8> *
+        # |  9>
+        # | 10>                          ****END OF INPUT****
+        # ================================================================================
+        if "INPUT FILE" == line.strip():
+            self.skip_line(inputfile, '=')
+            self.metadata['input_file_name'] = next(inputfile).split()[-1]
+
+            # First, collect all the lines...
+            lines = []
+            for line in inputfile:
+                if line[0] != '|':
+                    break
+                lines.append(line[6:])
+
+            self.metadata['input_file_contents'] = ''.join(lines[:-1])
+            lines_iter = iter(lines[:-1])
+
+            keywords = []
+            coords = []
+            # ...then parse them separately.
+            for line in lines_iter:
+                line = line.strip()
+                if not line:
+                    continue
+
+                # Keywords block
+                if line[0] == '!':
+                    keywords += line[1:].split()
+
+                # Impossible to parse without knowing whether a keyword opens a new block
+                elif line[0] == '%':
+                    pass
+
+                # Geometry block
+                elif line[0] == '*':
+                    coord_type, charge, multiplicity = line[1:].split()[:3]
+                    self.set_attribute('charge', int(charge))
+                    self.set_attribute('multiplicity', int(multiplicity))
+                    coord_type = coord_type.lower()
+                    self.metadata['coord_type'] = coord_type
+                    if coord_type == 'xyz':
+                        def splitter(line):
+                            atom, x, y, z = line.split()[:4]
+                            return [atom, float(x), float(y), float(z)]
+                    elif coord_type in ['int', 'internal']:
+                        def splitter(line):
+                            atom, a1, a2, a3, bond, angle, dihedral = line.split()[:7]
+                            return [atom, int(a1), int(a2), int(a3), float(bond), float(angle), float(dihedral)]
+                    elif coord_type == 'gzmt':
+                        def splitter(line):
+                            vals = line.split()[:7]
+                            if len(vals) == 7:
+                                atom, a1, bond, a2, angle, a3, dihedral = vals
+                                return [atom, int(a1), float(bond), int(a2), float(angle), int(a3), float(dihedral)]
+                            elif len(vals) == 5:
+                                return [vals[0], int(vals[1]), float(vals[2]), int(vals[3]), float(vals[4])]
+                            elif len(vals) == 3:
+                                return [vals[0], int(vals[1]), float(vals[2])]
+                            elif len(vals) == 1:
+                                return [vals[0]]
+                            self.logger.warning('Incorrect number of atoms in input geometry.')
+                    elif 'file' in coord_type:
+                        pass
+                    else:
+                        self.logger.warning('Invalid coordinate type.')
+
+                    if 'file' not in coord_type:
+                        for line in lines_iter:
+                            if not line:
+                                continue
+                            if line[0] == '*' or line.strip() == "end":
+                                break
+                            # Strip basis specification that can appear after coordinates
+                            line = line.split('newGTO')[0].strip()
+                            coords.append(splitter(line))
+
+            self.metadata['keywords'] = keywords
+            self.metadata['coords'] = coords
 
         if line[0:15] == "Number of atoms":
 
@@ -242,6 +369,29 @@ class ORCA(logfileparser.Logfile):
                 self.geotargets_names.append(name)
                 self.geotargets.append(target)
 
+        # ------------------
+        # CARTESIAN GRADIENT
+        # ------------------
+        #
+        # 1   H   :    0.000000004    0.019501450   -0.021537091
+        # 2   O   :    0.000000054   -0.042431648    0.042431420
+        # 3   H   :    0.000000004    0.021537179   -0.019501388
+        if line[:18] == 'CARTESIAN GRADIENT':
+            next(inputfile)
+            next(inputfile)
+
+            grads = []
+            line = next(inputfile).strip()
+            while line:
+                idx, atom, colon, x, y, z = line.split()
+                grads.append((float(x), float(y), float(z)))
+
+                line = next(inputfile).strip()
+
+            if not hasattr(self, 'grads'):
+                self.grads = []
+            self.grads.append(grads)
+
         # After each geometry optimization step, ORCA prints the current convergence
         # parameters and the targets (again), so it is a good idea to check that they
         # have not changed. Note that the order of these criteria here are different
@@ -315,15 +465,14 @@ class ORCA(logfileparser.Logfile):
             line = next(inputfile)
             while len(line) > 1:
                 atom, x, y, z = line.split()
-                atomnos.append(self.table.number[atom])
-                atomcoords.append([float(x), float(y), float(z)])
+                if atom[-1] != ">":
+                    atomnos.append(self.table.number[atom])
+                    atomcoords.append([float(x), float(y), float(z)])
                 line = next(inputfile)
 
             self.set_attribute('natom', len(atomnos))
             self.set_attribute('atomnos', atomnos)
-            if not hasattr(self, 'atomcoords'):
-                self.atomcoords = []
-            self.atomcoords.append(atomcoords)
+            self.append_attribute("atomcoords", atomcoords)
 
         """ Grab atom masses
         ----------------------------
@@ -341,10 +490,13 @@ class ORCA(logfileparser.Logfile):
             line = next(inputfile)
             self.atommasses = []
             while len(line) > 1:
-                if line == '* core charge reduced due to ECP\n':
+                if line[:32] == '* core charge reduced due to ECP':
+                    break
+                if line.strip() == "> coreless ECP center with (optional) point charge":
                     break
                 no, lb, za, frag, mass, x, y, z = line.split()
-                self.atommasses.append(float(mass))
+                if lb[-1] != ">":
+                    self.atommasses.append(float(mass))
                 line = next(inputfile)
 
         if line[21:68] == "FINAL ENERGY EVALUATION AT THE STATIONARY POINT":
@@ -433,17 +585,40 @@ class ORCA(logfileparser.Logfile):
                     broken = line.split()
                     self.aooverlaps[j, i:i+size] = list(map(float, broken[1:size+1]))
 
-        # Molecular orbital coefficients.
-        # This is also where atombasis is parsed.
+        # Molecular orbital coefficients are parsed here, but also related things
+        #like atombasis and aonames if possible.
+        #
+        # Normally the output is easy to parse like this:
+        # ------------------
+        # MOLECULAR ORBITALS
+        # ------------------
+        #                       0         1         2         3         4         5   
+        #                  -19.28527 -19.26828 -19.26356 -19.25801 -19.25765 -19.21471
+        #                    2.00000   2.00000   2.00000   2.00000   2.00000   2.00000
+        #                   --------  --------  --------  --------  --------  --------
+        #   0C   1s         0.000002 -0.000001  0.000000  0.000000 -0.000000  0.000001
+        #   0C   2s        -0.000007  0.000006 -0.000002 -0.000000  0.000001 -0.000003
+        #   0C   3s        -0.000086 -0.000061  0.000058 -0.000033 -0.000027 -0.000058
+        # ...
+        #
+        # But when the numbers get big, things get yucky since ORCA does not use
+        # fixed width formatting for the floats, and does not insert extra spaces
+        # when the numbers get wider. So things get stuck together overflowing columns,
+        # like this:
+        #   12C   6s       -11.608845-53.775398161.302640-76.633779 29.914985 22.083999
+        #
+        # One assumption that seems to hold is that there are always six significant
+        # digits in the coefficients, so we can try to use that to delineate numbers
+        # when the parsing gets rough. This is what we do below with a regex, and a case
+        # like this is tested in regression ORCA/ORCA4.0/invalid-literal-for-float.out
+        # which was reported in https://github.com/cclib/cclib/issues/629
         if line[0:18] == "MOLECULAR ORBITALS":
 
             self.skip_line(inputfile, 'dashes')
 
+            aonames = []
+            atombasis = [[] for i in range(self.natom)]
             mocoeffs = [numpy.zeros((self.nbasis, self.nbasis), "d")]
-            self.aonames = []
-            self.atombasis = []
-            for n in range(self.natom):
-                self.atombasis.append([])
 
             for spin in range(len(self.moenergies)):
 
@@ -456,31 +631,32 @@ class ORCA(logfileparser.Logfile):
                     self.updateprogress(inputfile, "Coefficients")
 
                     self.skip_lines(inputfile, ['numbers', 'energies', 'occs'])
-
                     dashes = next(inputfile)
-                    broken = dashes.split()
-                    size = len(broken)
 
                     for j in range(self.nbasis):
                         line = next(inputfile)
-                        broken = line.split()
 
-                        #only need this on the first time through
+                        # Only need this in the first iteration.
                         if spin == 0 and i == 0:
                             atomname = line[3:5].split()[0]
                             num = int(line[0:3])
-                            orbital = broken[1].upper()
+                            orbital = line.split()[1].upper()
 
-                            self.aonames.append("%s%i_%s" % (atomname, num+1, orbital))
-                            self.atombasis[num].append(j)
+                            aonames.append("%s%i_%s" % (atomname, num+1, orbital))
+                            atombasis[num].append(j)
 
-                        temp = []
-                        vals = line[16:-1]  # -1 to remove the last blank space
-                        for k in range(0, len(vals), 10):
-                            temp.append(float(vals[k:k+10]))
-                        mocoeffs[spin][i:i+size, j] = temp
+                        # This regex will tease out all number with exactly
+                        # six digits after the decimal point.
+                        coeffs = re.findall('-?\d+\.\d{6}', line)
 
-            self.mocoeffs = mocoeffs
+                        # Something is very wrong if this does not hold.
+                        assert len(coeffs) <= 6
+
+                        mocoeffs[spin][i:i+len(coeffs), j] = [float(c) for c in coeffs]
+
+            self.set_attribute('aonames', aonames)
+            self.set_attribute('atombasis', atombasis)
+            self.set_attribute("mocoeffs", mocoeffs)
 
         # Basis set information
         # ORCA prints this out in a somewhat indirect fashion.
@@ -623,9 +799,12 @@ class ORCA(logfileparser.Logfile):
                 self.etsecs.append(sec)
                 line = next(inputfile)
 
-
-        # Parse the various absorption spectra for TDDFT and ROCIS
+        # Parse the various absorption spectra for TDDFT and ROCIS.
         if 'ABSORPTION SPECTRUM' in line or 'ELECTRIC DIPOLE' in line:
+            # CASSCF has an anomalous printing of ABSORPTION SPECTRUM.
+            if line[:-1] == 'ABSORPTION SPECTRUM':
+                return
+
             line = line.strip()
 
             # Standard header, occasionally changes
@@ -717,7 +896,7 @@ State  Energy   Wavelength       D2            m2              Q2               
 
             elif line[:55] == 'SPIN ORBIT CORRECTED ABSORPTION SPECTRUM VIA TRANSITION':
                 def energy_intensity(line):
-                    """ ROCIS dipole approximation with SOC == True (electric or veloctiy dipole moments)
+                    """ ROCIS dipole approximation with SOC == True (electric or velocity dipole moments)
 -------------------------------------------------------------------------------
 SPIN ORBIT CORRECTED ABSORPTION SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS
 -------------------------------------------------------------------------------
@@ -745,6 +924,23 @@ States  Energy Wavelength    D2        m2        Q2         D2+m2+Q2       D2/TO
                     state, state2, energy, wavelength, d2, m2, q2, intensity, d2_contrib, m2_contrib, q2_contrib = line.split()
                     return energy, intensity
 
+            # Clashes with Orca 2.6 (and presumably before) TDDFT absorption spectrum printing
+            elif line == 'ABSORPTION SPECTRUM' and float(self.metadata['package_version']) > 2.6:
+                def energy_intensity(line):
+                    """ CASSCF absorption spectrum
+------------------------------------------------------------------------------------------
+                                ABSORPTION SPECTRUM
+------------------------------------------------------------------------------------------
+  States           Energy   Wavelength   fosc          T2        TX         TY        TZ
+                   (cm-1)     (nm)                   (D**2)      (D)        (D)       (D)
+------------------------------------------------------------------------------------------
+  0( 0)-> 1( 0) 1   83163.2    120.2   0.088250385   2.25340   0.00000   0.00000   1.50113
+"""
+                    reg = r'(\d+)\( ?(\d+)\)-> ?(\d+)\( ?(\d+)\) (\d+)'+ '\s+(\d+\.\d+)'*4 + '\s+(-?\d+\.\d+)'*3
+                    res = re.search(reg, line)
+                    jstate, jblock, istate, iblock, mult, energy, wavelength, intensity, t2, tx, ty, tz = res.groups()
+                    return energy, intensity
+
             name = line
             self.skip_lines(inputfile, header)
 
@@ -754,7 +950,9 @@ States  Energy Wavelength    D2        m2        Q2         D2+m2+Q2       D2/TO
             etenergies = []
             etoscs = []
             line = next(inputfile)
-            while len(line) > 1:
+            # The sections are occasionally ended with dashed lines
+            # other times they are blank (other than a new line)
+            while len(line.strip('-')) > 2:
                 energy, intensity = energy_intensity(line)
                 etenergies.append(float(energy))
                 etoscs.append(float(intensity))
@@ -765,59 +963,92 @@ States  Energy Wavelength    D2        m2        Q2         D2+m2+Q2       D2/TO
             self.etoscs = numpy.array(etoscs)
             self.transprop[name] = (self.etenergies, self.etoscs)
 
+        if line.strip() == "CD SPECTRUM":
+            # -------------------------------------------------------------------
+            #                              CD SPECTRUM
+            # -------------------------------------------------------------------
+            # State   Energy Wavelength       R         MX        MY        MZ   
+            #         (cm-1)   (nm)       (1e40*cgs)   (au)      (au)      (au)  
+            # -------------------------------------------------------------------
+            #    1   43167.6    231.7      0.00000   0.00000  -0.00000   0.00000
+            #
+            etenergies = []
+            etrotats = []
+            self.skip_lines(inputfile, ["d", "State   Energy Wavelength", "(cm-1)   (nm)", "d"])
+            line = next(inputfile)
+            while line.strip():
+                tokens = line.split()
+                if "spin forbidden" in line:
+                    etrotat, mx, my, mz = 0.0, 0.0, 0.0, 0.0
+                else:
+                    etrotat, mx, my, mz = [self.float(t) for t in tokens[3:]]
+                etenergies.append(self.float(tokens[1]))
+                etrotats.append(etrotat)
+                line = next(inputfile)
+            self.set_attribute("etrotats", etrotats)
+            if not hasattr(self, "etenergies"):
+                self.logger.warning("etenergies not parsed before ECD section, "
+                                    "the output file may be malformed")
+                self.set_attribute("etenergies", etenergies)
 
-        if line[0:23] == "VIBRATIONAL FREQUENCIES":
-
+        if line[:23] == "VIBRATIONAL FREQUENCIES":
             self.skip_lines(inputfile, ['d', 'b'])
 
-            self.vibfreqs = numpy.zeros((3 * self.natom,), "d")
+            # Starting with 4.1, a scaling factor for frequencies is printed
+            if float(self.metadata["package_version"][:3]) > 4.0:
+                self.skip_lines(inputfile, ['Scaling factor for frequencies', 'b'])
 
-            for i in range(3 * self.natom):
-                line = next(inputfile)
-                self.vibfreqs[i] = float(line.split()[1])
+            vibfreqs = numpy.zeros(3 * self.natom)
+            for i, line in zip(range(3 * self.natom), inputfile):
+                vibfreqs[i] = float(line.split()[1])
 
-            if numpy.any(self.vibfreqs[0:6] != 0):
-                msg = "Modes corresponding to rotations/translations "
-                msg += "may be non-zero."
-                self.logger.warning(msg)
+            nonzero = numpy.nonzero(vibfreqs)[0]
+            self.first_mode = nonzero[0]
+            # Take all modes after first
+            # Mode between imaginary and real modes could be 0
+            self.num_modes = 3*self.natom - self.first_mode
+            if self.num_modes > 3*self.natom - 6:
+                msg = "Modes corresponding to rotations/translations may be non-zero."
+                if self.num_modes == 3*self.natom - 5:
+                    msg += '\n You can ignore this if the molecule is linear.'
+            self.vibfreqs = vibfreqs[self.first_mode:]
 
-            self.vibfreqs = self.vibfreqs[6:]
-
-        if line[0:12] == "NORMAL MODES":
-            """ Format:
-            NORMAL MODES
-            ------------
-
-            These modes are the cartesian displacements weighted by the diagonal matrix
-            M(i,i)=1/sqrt(m[i]) where m[i] is the mass of the displaced atom
-            Thus, these vectors are normalized but *not* orthogonal
-
-                              0          1          2          3          4          5
-                  0       0.000000   0.000000   0.000000   0.000000   0.000000   0.000000
-                  1       0.000000   0.000000   0.000000   0.000000   0.000000   0.000000
-                  2       0.000000   0.000000   0.000000   0.000000   0.000000   0.000000
-            ...
-            """
-
-            self.vibdisps = numpy.zeros((3 * self.natom, self.natom, 3), "d")
+        # NORMAL MODES
+        # ------------
+        #
+        # These modes are the cartesian displacements weighted by the diagonal matrix
+        # M(i,i)=1/sqrt(m[i]) where m[i] is the mass of the displaced atom
+        # Thus, these vectors are normalized but *not* orthogonal
+        #
+        #                   0          1          2          3          4          5
+        #       0       0.000000   0.000000   0.000000   0.000000   0.000000   0.000000
+        #       1       0.000000   0.000000   0.000000   0.000000   0.000000   0.000000
+        #       2       0.000000   0.000000   0.000000   0.000000   0.000000   0.000000
+        # ...
+        if line[:12] == "NORMAL MODES":
+            vibdisps = numpy.zeros((3 * self.natom, self.natom, 3), "d")
 
             self.skip_lines(inputfile, ['d', 'b', 'text', 'text', 'text', 'b'])
 
             for mode in range(0, 3 * self.natom, 6):
                 header = next(inputfile)
                 for atom in range(self.natom):
-                    x = next(inputfile).split()[1:]
-                    y = next(inputfile).split()[1:]
-                    z = next(inputfile).split()[1:]
+                    vibdisps[mode:mode + 6, atom, 0] = next(inputfile).split()[1:]
+                    vibdisps[mode:mode + 6, atom, 1] = next(inputfile).split()[1:]
+                    vibdisps[mode:mode + 6, atom, 2] = next(inputfile).split()[1:]
 
-                    self.vibdisps[mode:mode + 6, atom, 0] = x
-                    self.vibdisps[mode:mode + 6, atom, 1] = y
-                    self.vibdisps[mode:mode + 6, atom, 2] = z
+            self.vibdisps = vibdisps[self.first_mode:]
 
-            self.vibdisps = self.vibdisps[6:]
-
-        if line[0:11] == "IR SPECTRUM":
-
+        # -----------
+        # IR SPECTRUM
+        # -----------
+        #
+        #  Mode    freq (cm**-1)   T**2         TX         TY         TZ
+        # -------------------------------------------------------------------
+        #    6:      2069.36    1.674341  ( -0.000000   0.914970  -0.914970)
+        #    7:      3978.81   76.856228  (  0.000000   6.199041  -6.199042)
+        #    8:      4113.34   61.077784  ( -0.000000   5.526201   5.526200)
+        if line[:11] == "IR SPECTRUM":
             self.skip_lines(inputfile, ['d', 'b', 'header', 'd'])
 
             self.vibirs = numpy.zeros((3 * self.natom,), "d")
@@ -828,13 +1059,21 @@ States  Energy Wavelength    D2        m2        Q2         D2+m2+Q2       D2/TO
                 self.vibirs[num] = float(line.split()[2])
                 line = next(inputfile)
 
-            self.vibirs = self.vibirs[6:]
+            self.vibirs = self.vibirs[self.first_mode:]
 
-        if line[0:14] == "RAMAN SPECTRUM":
-
+        # --------------
+        # RAMAN SPECTRUM
+        # --------------
+        #
+        #  Mode    freq (cm**-1)   Activity   Depolarization
+        # -------------------------------------------------------------------
+        #    6:       296.23      5.291229      0.399982
+        #    7:       356.70      0.000000      0.749764
+        #    8:       368.27      0.000000      0.202068
+        if line[:14] == "RAMAN SPECTRUM":
             self.skip_lines(inputfile, ['d', 'b', 'header', 'd'])
 
-            self.vibramans = numpy.zeros((3 * self.natom,), "d")
+            self.vibramans = numpy.zeros(3 * self.natom)
 
             line = next(inputfile)
             while len(line) > 2:
@@ -842,7 +1081,8 @@ States  Energy Wavelength    D2        m2        Q2         D2+m2+Q2       D2/TO
                 self.vibramans[num] = float(line.split()[2])
                 line = next(inputfile)
 
-            self.vibramans = self.vibramans[6:]
+            self.vibramans = self.vibramans[self.first_mode:]
+
 
         # ORCA will print atomic charges along with the spin populations,
         #   so care must be taken about choosing the proper column.
@@ -912,6 +1152,14 @@ States  Energy Wavelength    D2        m2        Q2         D2+m2+Q2       D2/TO
                     self.logger.warning('Overwriting previous multipole moments with new values')
                     self.moments = [reference, dipole]
 
+        if "Molecular Dynamics Iteration" in line:
+            self.skip_lines(inputfile, ['d', 'ORCA MD', 'd', 'New Coordinates'])
+            line = next(inputfile)
+            tokens = line.split()
+            assert tokens[0] == "time"
+            time = utils.convertor(float(tokens[2]), "time_au", "fs")
+            self.append_attribute('time', time)
+
         # Static polarizability.
         if line.strip() == "THE POLARIZABILITY TENSOR":
             if not hasattr(self, 'polarizabilities'):
@@ -924,6 +1172,262 @@ States  Energy Wavelength    D2        m2        Q2         D2+m2+Q2       D2/TO
                 line = next(inputfile)
                 polarizability.append(line.split())
             self.polarizabilities.append(numpy.array(polarizability))
+
+        if line.strip() == 'ORCA-CASSCF':
+            # -------------------------------------------------------------------------------
+            #                               ORCA-CASSCF
+            # -------------------------------------------------------------------------------
+            #
+            # Symmetry handling      UseSym     ... ON
+            # Point group                       ... C2
+            # Used point group                  ... C2
+            # Number of irreps                  ... 2
+            #    Irrep    A has   10 SALCs (ofs=   0) #(closed)=   0 #(active)=   2
+            #    Irrep    B has   10 SALCs (ofs=  10) #(closed)=   0 #(active)=   2
+            #  Symmetries of active orbitals:
+            #    MO =    0  IRREP= 0 (A)
+            #    MO =    1  IRREP= 1 (B)
+            self.skip_lines(inputfile, ['d', 'b'])
+            vals = next(inputfile).split()
+            # Symmetry section is only printed if symmetry is used.
+            if vals[0] == 'Symmetry':
+                assert vals[-1] == 'ON'
+                point_group = next(inputfile).split()[-1]
+                used_point_group = next(inputfile).split()[-1]
+                num_irreps = int(next(inputfile).split()[-1])
+                num_active = 0
+                # Parse the irreps.
+                for i, line in zip(range(num_irreps), inputfile):
+                    reg = r'Irrep\s+(\w+) has\s+(\d+) SALCs \(ofs=\s*(\d+)\) #\(closed\)=\s*(\d+) #\(active\)=\s*(\d+)'
+                    groups = re.search(reg, line).groups()
+                    irrep = groups[0]
+                    salcs, ofs, closed, active = map(int, groups[1:])
+                    num_active += active
+                self.skip_line(inputfile, 'Symmetries')
+                # Parse the symmetries of the active orbitals.
+                for i, line in zip(range(num_active), inputfile):
+                    reg = r'(\d+)  IRREP= (\d+) \((\w+)\)'
+                    groups = re.search(reg, line).groups()
+                    mo, irrep_idx, irrep = groups
+
+            # Skip until the system specific settings.
+            # This will align the cases of symmetry on and off.
+            line = next(inputfile)
+            while line[:25] != 'SYSTEM-SPECIFIC SETTINGS:':
+                line = next(inputfile)
+
+            # SYSTEM-SPECIFIC SETTINGS:
+            # Number of active electrons          ...    4
+            # Number of active orbitals           ...    4
+            # Total number of electrons           ...    4
+            # Total number of orbitals            ...   20
+            num_el = int(next(inputfile).split()[-1])
+            num_orbs = int(next(inputfile).split()[-1])
+            total_el = int(next(inputfile).split()[-1])
+            total_orbs = int(next(inputfile).split()[-1])
+
+            # Determined orbital ranges:
+            #    Internal       0 -   -1 (   0 orbitals)
+            #    Active         0 -    3 (   4 orbitals)
+            #    External       4 -   19 (  16 orbitals)
+            self.skip_lines(inputfile, ['b', 'Determined'])
+            orbital_ranges = []
+            # Parse the orbital ranges for: Internal, Active, and External orbitals.
+            for i in range(3):
+                vals = next(inputfile).split()
+                start, end, num = int(vals[1]), int(vals[3]), int(vals[5])
+                # Change from inclusive to exclusive in order to match python.
+                end = end + 1
+                assert end - start == num
+                orbital_ranges.append((start, end, num))
+
+            line = next(inputfile)
+            while line[:8] != 'CI-STEP:':
+                line = next(inputfile)
+
+            # CI-STEP:
+            # CI strategy                         ... General CI
+            # Number of symmetry/multplity blocks ...    1
+            # BLOCK  1 WEIGHT=   1.0000
+            #   Multiplicity                      ...    1
+            #   Irrep                             ...    0 (A)
+            #   #(Configurations)                 ...   11
+            #   #(CSFs)                           ...   12
+            #   #(Roots)                          ...    1
+            #     ROOT=0 WEIGHT=    1.000000
+            self.skip_line(inputfile, 'CI strategy')
+            num_blocks = int(next(inputfile).split()[-1])
+            for b in range(1, num_blocks + 1):
+                vals = next(inputfile).split()
+                block = int(vals[1])
+                weight = float(vals[3])
+                assert b == block
+                mult = int(next(inputfile).split()[-1])
+                vals = next(inputfile).split()
+                # The irrep will only be printed if using symmetry.
+                if vals[0] == 'Irrep':
+                    irrep_idx = int(vals[-2])
+                    irrep = vals[-1].strip('()')
+                    vals = next(inputfile).split()
+                num_confs = int(vals[-1])
+                num_csfs = int(next(inputfile).split()[-1])
+                num_roots = int(next(inputfile).split()[-1])
+                # Parse the roots.
+                for r, line in zip(range(num_roots), inputfile):
+                    reg = r'=(\d+) WEIGHT=\s*(\d\.\d+)'
+                    groups = re.search(reg, line).groups()
+                    root = int(groups[0])
+                    weight = float(groups[1])
+                    assert r == root
+
+            # Skip additional setup printing and CASSCF iterations.
+            line = next(inputfile).strip()
+            while line != 'CASSCF RESULTS':
+                line = next(inputfile).strip()
+
+            # --------------
+            # CASSCF RESULTS
+            # --------------
+            #
+            # Final CASSCF energy       : -14.597120777 Eh    -397.2078 eV
+            self.skip_lines(inputfile, ['d', 'b'])
+            casscf_energy = float(next(inputfile).split()[4])
+
+            # This is only printed for first and last step of geometry optimization.
+            # ----------------
+            # ORBITAL ENERGIES
+            # ----------------
+            #
+            #   NO   OCC          E(Eh)            E(eV)    Irrep
+            #    0   0.0868       0.257841         7.0162    1-A
+            self.skip_lines(inputfile, ['b', 'd'])
+            if next(inputfile).strip() == 'ORBITAL ENERGIES':
+                self.skip_lines(inputfile, ['d', 'b', 'NO'])
+                orbitals = []
+                vals = next(inputfile).split()
+                while vals:
+                    occ, eh, ev = map(float, vals[1:4])
+                    # The irrep will only be printed if using symmetry.
+                    if len(vals) == 5:
+                        idx, irrep = vals[4].split('-')
+                        orbitals.append((occ, ev, int(idx), irrep))
+                    else:
+                        orbitals.append((occ, ev))
+                    vals = next(inputfile).split()
+                self.skip_lines(inputfile, ['b', 'd'])
+
+            # Orbital Compositions
+            # ---------------------------------------------
+            # CAS-SCF STATES FOR BLOCK  1 MULT= 1 IRREP= Ag NROOTS= 2
+            # ---------------------------------------------
+            #
+            # ROOT   0:  E=     -14.5950507665 Eh
+            #       0.89724 [     0]: 2000
+            for b in range(num_blocks):
+                # Parse the block data.
+                reg = r'BLOCK\s+(\d+) MULT=\s*(\d+) (IRREP=\s*\w+ )?(NROOTS=\s*(\d+))?'
+                groups = re.search(reg, next(inputfile)).groups()
+                block = int(groups[0])
+                mult = int(groups[1])
+                # The irrep will only be printed if using symmetry.
+                if groups[2] is not None:
+                    irrep = groups[2].split('=')[1].strip()
+                nroots = int(groups[3].split('=')[1])
+
+                self.skip_lines(inputfile, ['d', 'b'])
+
+                line = next(inputfile).strip()
+                while line:
+                    if line[:4] == 'ROOT':
+                        # Parse the root section.
+                        reg = r'(\d+):\s*E=\s*(-?\d+.\d+) Eh(\s+\d+\.\d+ eV)?(\s+\d+\.\d+)?'
+                        groups = re.search(reg, line).groups()
+                        root = int(groups[0])
+                        energy = float(groups[1])
+                        # Excitation energies are only printed for excited state roots.
+                        if groups[2] is not None:
+                            excitation_energy_ev = float(groups[2].split()[0])
+                            excitation_energy_cm = float(groups[3])
+                    else:
+                        # Parse the occupations section.
+                        reg = r'(\d+\.\d+) \[\s*(\d+)\]: (\d+)'
+                        groups = re.search(reg, line).groups()
+                        coeff = float(groups[0])
+                        number = float(groups[1])
+                        occupations = list(map(int, groups[2]))
+
+                    line = next(inputfile).strip()
+
+            # Skip any extended wavefunction printing.
+            while line != 'DENSITY MATRIX':
+                line = next(inputfile).strip()
+
+            self.skip_lines(inputfile, ['d', 'b'])
+            # --------------
+            # DENSITY MATRIX
+            # --------------
+            #
+            #                    0          1          2          3
+            #       0       0.897244   0.000000   0.000000   0.000000
+            #       1       0.000000   0.533964   0.000000   0.000000
+            density = numpy.zeros((num_orbs, num_orbs))
+            for i in range(0, num_orbs, 6):
+                next(inputfile)
+                for j, line in zip(range(num_orbs), inputfile):
+                    density[j][i:i + 6] = list(map(float, line.split()[1:]))
+            self.skip_lines(inputfile, ['Trace', 'b', 'd'])
+
+            # This is only printed for open-shells.
+            # -------------------
+            # SPIN-DENSITY MATRIX
+            # -------------------
+            #
+            #                   0          1          2          3          4          5
+            #       0      -0.003709   0.001410   0.000074  -0.000564  -0.007978   0.000735
+            #       1       0.001410  -0.001750  -0.000544  -0.003815   0.008462  -0.004529
+            if next(inputfile).strip() == 'SPIN-DENSITY MATRIX':
+                self.skip_lines(inputfile, ['d', 'b'])
+                spin_density = numpy.zeros((num_orbs, num_orbs))
+                for i in range(0, num_orbs, 6):
+                    next(inputfile)
+                    for j, line in zip(range(num_orbs), inputfile):
+                        spin_density[j][i:i + 6] = list(map(float, line.split()[1:]))
+                self.skip_lines(inputfile, ['Trace', 'b', 'd', 'ENERGY'])
+            self.skip_lines(inputfile, ['d', 'b'])
+
+            # -----------------
+            # ENERGY COMPONENTS
+            # -----------------
+            #
+            # One electron energy          :    -18.811767801 Eh        -511.8942 eV
+            # Two electron energy          :      4.367616074 Eh         118.8489 eV
+            # Nuclear repuslion energy     :      0.000000000 Eh           0.0000 eV
+            #                                ----------------
+            #                                   -14.444151727
+            #
+            # Kinetic energy               :     14.371970266 Eh         391.0812 eV
+            # Potential energy             :    -28.816121993 Eh        -784.1265 eV
+            # Virial ratio                 :     -2.005022378
+            #                                ----------------
+            #                                   -14.444151727
+            #
+            # Core energy                  :    -13.604678408 Eh     -370.2021 eV
+            one_el_energy = float(next(inputfile).split()[4])
+            two_el_energy = float(next(inputfile).split()[4])
+            nuclear_repulsion_energy = float(next(inputfile).split()[4])
+            self.skip_line(inputfile, 'dashes')
+            energy = float(next(inputfile).strip())
+            self.skip_line(inputfile, 'blank')
+            kinetic_energy = float(next(inputfile).split()[3])
+            potential_energy = float(next(inputfile).split()[3])
+            virial_ratio = float(next(inputfile).split()[3])
+            self.skip_line(inputfile, 'dashes')
+            energy = float(next(inputfile).strip())
+            self.skip_line(inputfile, 'blank')
+            core_energy = float(next(inputfile).split()[3])
+
+        if line[:15] == 'TOTAL RUN TIME:':
+            self.metadata['success'] = True
 
     def parse_charge_section(self, line, inputfile, chargestype):
         """Parse a charge section, modifies class in place
@@ -966,9 +1470,11 @@ States  Energy Wavelength    D2        m2        Q2         D2+m2+Q2       D2/TO
 
         line = next(inputfile)
         while not should_stop(line):
-            charges.append(float(line[start:stop]))
-            if has_spins:
-                spins.append(float(line[stop:]))
+            # Don't add point charges or embedding potentials.
+            if "Q :" not in line:
+                charges.append(float(line[start:stop]))
+                if has_spins:
+                    spins.append(float(line[stop:]))
             line = next(inputfile)
 
         self.atomcharges[chargestype] = charges

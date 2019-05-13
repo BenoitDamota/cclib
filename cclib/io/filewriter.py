@@ -1,24 +1,26 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (c) 2017, the cclib development team
+# Copyright (c) 2018, the cclib development team
 #
 # This file is part of cclib (http://cclib.github.io) and is distributed under
 # the terms of the BSD 3-Clause License.
 
 """Generic file writer and related tools"""
 
-try:
+import logging
+
+from collections import Iterable
+
+import numpy
+
+from cclib.parser.utils import PeriodicTable
+from cclib.parser.utils import find_package
+
+_has_openbabel = find_package("openbabel")
+if _has_openbabel:
     from cclib.bridge import makeopenbabel
     import openbabel as ob
     import pybel as pb
-    _has_openbabel = True
-except ImportError:
-    _has_openbabel = False
-
-from math import sqrt
-from collections import Iterable
-
-from cclib.parser.utils import PeriodicTable
 
 
 class MissingAttributeError(Exception):
@@ -72,7 +74,10 @@ class Writer(object):
 
     def _calculate_total_dipole_moment(self):
         """Calculate the total dipole moment."""
-        return sqrt(sum(self.ccdata.moments[1] ** 2))
+
+        # ccdata.moments may exist, but only contain center-of-mass coordinates
+        if len(getattr(self.ccdata, 'moments', [])) > 1:
+            return numpy.linalg.norm(self.ccdata.moments[1])
 
     def _check_required_attributes(self):
         """Check if required attributes are present in ccdata."""
@@ -84,12 +89,21 @@ class Writer(object):
                 'Could not parse required attributes to write file: ' + missing)
 
     def _make_openbabel_from_ccdata(self):
-        """Create Open Babel and Pybel molecules from ccData.
-        """
+        """Create Open Babel and Pybel molecules from ccData."""
+        if not hasattr(self.ccdata, 'charge'):
+            logging.warning("ccdata object does not have charge, setting to 0")
+            _charge = 0
+        else:
+            _charge = self.ccdata.charge
+        if not hasattr(self.ccdata, 'mult'):
+            logging.warning("ccdata object does not have spin multiplicity, setting to 1")
+            _mult = 1
+        else:
+            _mult = self.ccdata.mult
         obmol = makeopenbabel(self.ccdata.atomcoords,
                               self.ccdata.atomnos,
-                              charge=self.ccdata.charge,
-                              mult=self.ccdata.mult)
+                              charge=_charge,
+                              mult=_mult)
         if self.jobfilename is not None:
             obmol.SetTitle(self.jobfilename)
         return (obmol, pb.Molecule(obmol))
@@ -127,3 +141,6 @@ class Writer(object):
                 indices.add(i)
             self.indices = indices
         return
+
+
+del find_package

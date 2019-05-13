@@ -1,19 +1,22 @@
 # -*- coding: utf-8 -*-
 #
-# Copyright (c) 2018, the cclib development team
+# Copyright (c) 2019, the cclib development team
 #
 # This file is part of cclib (http://cclib.github.io) and is distributed under
 # the terms of the BSD 3-Clause License.
-
 """Unit tests for main scripts (ccget, ccwrite)."""
-import os
-import unittest
-from io import StringIO
 
-try:
-    from unittest.mock import patch
-except ImportError:
-    from mock import patch
+from __future__ import print_function
+
+import os
+import sys
+import unittest
+
+from six import add_move, MovedModule
+add_move(MovedModule('mock', 'mock', 'unittest.mock'))
+from six.moves import mock
+
+import cclib
 
 
 __filedir__ = os.path.dirname(__file__)
@@ -28,7 +31,7 @@ INPUT_FILE = os.path.join(
 CJSON_OUTPUT_FILENAME = 'dvb_gopt.cjson'
 
 
-@patch("cclib.scripts.ccget.ccread")
+@mock.patch("cclib.scripts.ccget.ccread")
 class ccgetTest(unittest.TestCase):
 
     def setUp(self):
@@ -39,13 +42,13 @@ class ccgetTest(unittest.TestCase):
 
         self.main = ccget.ccget
 
-    @patch("cclib.scripts.ccget.sys.argv", ["ccget"])
+    @mock.patch("cclib.scripts.ccget.sys.argv", ["ccget"])
     def test_empty_argv(self, mock_ccread):
         """Does the script fail as expected if called without parameters?"""
         with self.assertRaises(SystemExit):
             self.main()
 
-    @patch(
+    @mock.patch(
         "cclib.scripts.ccget.sys.argv",
         ["ccget", "atomcoords", INPUT_FILE]
     )
@@ -57,7 +60,7 @@ class ccgetTest(unittest.TestCase):
         self.assertEqual(ccread_call_args[0], INPUT_FILE)
 
 
-@patch("cclib.scripts.ccwrite.ccwrite")
+@mock.patch("cclib.scripts.ccwrite.ccwrite")
 class ccwriteTest(unittest.TestCase):
 
     def setUp(self):
@@ -68,13 +71,13 @@ class ccwriteTest(unittest.TestCase):
 
         self.main = ccwrite.main
 
-    @patch('cclib.scripts.ccwrite.sys.argv', ['ccwrite'])
+    @mock.patch('cclib.scripts.ccwrite.sys.argv', ['ccwrite'])
     def test_empty_argv(self, mock_ccwrite):
         """Does the script fail as expected if called without parameters?"""
         with self.assertRaises(SystemExit):
             self.main()
 
-    @patch(
+    @mock.patch(
         "cclib.scripts.ccwrite.sys.argv",
         ["ccwrite", "cjson", INPUT_FILE]
     )
@@ -86,6 +89,49 @@ class ccwriteTest(unittest.TestCase):
         ccwrite_call_args, ccwrite_call_kwargs = mock_ccwrite.call_args
         self.assertEqual(ccwrite_call_args[1], 'cjson')
         self.assertEqual(ccwrite_call_args[2], CJSON_OUTPUT_FILENAME)
+
+
+class ccframeTest(unittest.TestCase):
+
+    def setUp(self):
+        # It would be best to test with Pandas and not a mock!
+        if not hasattr(cclib.io.ccio, "pd"):
+            cclib.io.ccio.pd = mock.MagicMock()
+
+    def test_main_empty_argv(self):
+        """Does main() fail as expected if called without arguments?"""
+        with self.assertRaises(SystemExit):
+            cclib.scripts.ccframe.main()
+
+    @mock.patch(
+        "cclib.scripts.ccframe.sys.argv",
+        ["ccframe", INPUT_FILE]
+    )
+    @mock.patch("cclib.io.ccio._has_pandas", False)
+    def test_main_without_pandas(self):
+        """Does ccframe fail if Pandas can't be imported?"""
+        with self.assertRaisesRegexp(
+            ImportError, "You must install `pandas` to use this function"
+        ):
+            cclib.scripts.ccframe.main()
+
+    @mock.patch(
+        "cclib.scripts.ccframe.sys.argv",
+        ["ccframe", INPUT_FILE]
+    )
+    @mock.patch("cclib.io.ccio._has_pandas", True)
+    def test_main(self):
+        """Is ccframe called with the given parameters?"""
+        with mock.patch('sys.stdout') as mock_stdout:
+            cclib.scripts.ccframe.main()
+            self.assertEqual(mock_stdout.write.call_count, 2)
+            df, newline = mock_stdout.write.call_args_list
+            if isinstance(df[0][0], mock.MagicMock):
+                self.assertEqual(df[0][0].name, 'mock.DataFrame()')
+            else:
+                # TODO: this is what we really should be testing
+                pass
+            self.assertEqual(newline[0][0], '\n')
 
 
 if __name__ == "__main__":

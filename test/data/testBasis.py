@@ -10,6 +10,7 @@
 import os
 import unittest
 
+from skip import skipForParser
 
 __filedir__ = os.path.realpath(os.path.dirname(__file__))
 
@@ -34,17 +35,20 @@ class GenericBasisTest(unittest.TestCase):
     gbasis_C_2s_func0 = [2.9412, -0.1000]
     gbasis_C_2p_func0 = [2.9412, 0.1559]
 
+    @skipForParser('Turbomole','The parser is still being developed so we skip this test')
     def testgbasis(self):
         """Is gbasis the right length?"""
-        self.assertEquals(self.data.natom, len(self.data.gbasis))
+        self.assertEqual(self.data.natom, len(self.data.gbasis))
 
+    @skipForParser('Turbomole','The parser is still being developed so we skip this test')
     def testnames(self):
         """Are the name of basis set functions acceptable?"""
         for atom in self.data.gbasis:
             for fns in atom:
-                self.assert_(fns[0] in self.names,
+                self.assertTrue(fns[0] in self.names,
                              "%s not one of S or P" % fns[0])
 
+    @skipForParser('Turbomole','The parser is still being developed so we skip this test')
     def testsizeofbasis(self):
         """Is the basis set the correct size?"""
 
@@ -54,21 +58,24 @@ class GenericBasisTest(unittest.TestCase):
             for (ftype, contraction) in atom:
                 total += multiple[ftype]
 
-        self.assertEquals(self.data.nbasis, total)
+        self.assertEqual(self.data.nbasis, total)
 
+    @skipForParser('Turbomole','The parser is still being developed so we skip this test')
     def testcontractions(self):
         """Are the number of contractions on all atoms correct?"""
         for iatom, atom in enumerate(self.data.gbasis):
             atomno = self.data.atomnos[iatom]
-            self.assertEquals(len(atom), self.contractions[atomno])
+            self.assertEqual(len(atom), self.contractions[atomno])
 
+    @skipForParser('Turbomole','The parser is still being developed so we skip this test')
     def testprimitives(self):
         """Are all primitives 2-tuples?"""
         for atom in self.data.gbasis:
             for ftype, contraction in atom:
                 for primitive in contraction:
-                    self.assertEquals(len(primitive), 2)
+                    self.assertEqual(len(primitive), 2)
 
+    @skipForParser('Turbomole','The parser is still being developed so we skip this test')
     def testcoeffs(self):
         """Are the atomic basis set exponents and coefficients correct?"""
 
@@ -131,12 +138,17 @@ class JaguarBigBasisTest(GenericBigBasisTest):
     names = ['S', 'P', 'D', 'F']
 
 
+class MolcasBigBasisTest(GenericBigBasisTest):
+    """Customized big basis set unittest"""
+    spherical = True
+
+
 class MolproBigBasisTest(GenericBigBasisTest):
     """Customized big basis set unittest"""
     spherical = True
 
 
-class PsiBigBasisTest(GenericBigBasisTest):
+class Psi4BigBasisTest(GenericBigBasisTest):
     """Customized big basis set unittest"""
     spherical = True
 
