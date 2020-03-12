@@ -316,6 +316,22 @@ class Logfile(object):
         # Maybe the sub-class has something to do before parsing.
         self.before_parsing()
 
+        if hasattr(self, "extract_first_pass"):
+            for line in inputfile:
+                # @HACK : nwchem natom required for many other extraction but not
+                # always before other informations to extract
+                self.extract_first_pass(inputfile, line)
+
+        # @HACK : reopen file
+        # Remember that self.filename can be a list of files.
+        if not self.isstream:
+            if not self.isfileinput:
+                inputfile = openlogfile(self.filename)
+            else:
+                inputfile = self.filename
+        else:
+            inputfile = FileWrapper(self.stream)
+
         # Loop over lines in the file object and call extract().
         # This is where the actual parsing is done.
         for line in inputfile:

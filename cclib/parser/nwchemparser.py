@@ -39,16 +39,37 @@ class NWChem(logfileparser.Logfile):
 
     name2element = lambda self, lbl: "".join(itertools.takewhile(str.isalpha, str(lbl)))
 
-    def extract(self, inputfile, line):
-        """Extract information from the file object inputfile."""
+    def extract_first_pass(self, inputfile, line):
+        # search for No. of atoms     :    
+        if line[:22] == "          No. of atoms":
+            natom = int(line[28:])
+            self.set_attribute('natom', natom)
+        # search for "number of functions"
+        if line[21:40] == "number of functions":
+            nbasis = int(line.split()[-1])
+            self.set_attribute('nbasis', nbasis)
+        if "Charge" in line and not hasattr(self, "charge"):
+            self.set_attribute('charge', int(line.split()[-1]))
+        if "Spin multiplicity" in line and not hasattr(self, "mult"):
+            mult = line.split()[-1]
+            if mult == "singlet":
+                mult = 1
+            self.set_attribute('mult', int(mult))
+        # search for "Total SCF energy" or "Total DFT energy"
+        # The line containing the final SCF energy seems to be always identifiable like this.
+        if "Total SCF energy" in line or "Total DFT energy" in line:
+            # NWChem often does a line search during geometry optimization steps, reporting
+            # the SCF information but not the coordinates (which are not necessarily 'intermediate'
+            # since the step size can become smaller). We want to skip these SCF cycles,
+            # unless the coordinates can also be extracted (possibly from the gradients?).
+            if hasattr(self, 'linesearch') and self.linesearch:
+                return
 
-        # Extract the version number.
-        if "nwchem branch" in line:
-            self.metadata["package_version"] = line.split()[3]
-        # Don't add revision information to the main package version for now.
-        if "nwchem revision" in line:
-            revision = line.split()[3]
-
+            if not hasattr(self, "scfenergies"):
+                self.scfenergies = []
+            energy = float(line.split()[-1])
+            energy = utils.convertor(energy, "hartree", "eV")
+            self.scfenergies.append(energy)
         # This is printed in the input module, so should always be the first coordinates,
         # and contains some basic information we want to parse as well. However, this is not
         # the only place where the coordinates are printed during geometry optimization,
@@ -79,6 +100,41 @@ class NWChem(logfileparser.Logfile):
             self.atomcoords.append(coords)
 
             self.set_attribute('atomnos', atomnos)
+        # HACK backup plan without geometry
+        if not hasattr(self, 'atomnos'):
+            if line.strip() == "Atom       Charge   Shell Charges":
+                atomnos = []
+                line = next(inputfile)
+                for _ in range(self.natom):
+                    line = next(inputfile)
+                    atomnos.append(int(line.split()[2]))
+                self.set_attribute('atomnos', atomnos)
+
+        if not hasattr(self, 'atomcoords'):
+            # HACK pas de geometry (FREQ) en Bohr
+            if line.strip() == "---------------------------- Atom information ----------------------------":
+                self.atomcoords = []
+                coords = []
+                line = next(inputfile)
+                line = next(inputfile)
+                for _ in range(self.natom):
+                    line = next(inputfile)
+                    _,_,x,y,z,_ = line.split()
+                    # bohr_to_Angstrom
+                    coords.append([utils.convertor(float(coord.replace('D','E')), "bohr", "Angstrom") 
+                                   for coord in [x, y, z]])
+                self.atomcoords.append(coords)
+
+    def extract(self, inputfile, line):
+        """Extract information from the file object inputfile."""
+
+        # Extract the version number.
+        if "nwchem branch" in line:
+            self.metadata["package_version"] = line.split()[3]
+        # Don't add revision information to the main package version for now.
+        if "nwchem revision" in line:
+            revision = line.split()[3]
+
 
         # If the geometry is printed in XYZ format, it will have the number of atoms.
         if line[12:31] == "XYZ format geometry":
@@ -88,7 +144,7 @@ class NWChem(logfileparser.Logfile):
             self.set_attribute('natom', natom)
 
         if line.strip() == "NWChem Geometry Optimization":
-            self.skip_lines(inputfile, ['d', 'b', 'b', 'b', 'b', 'title', 'b', 'b'])
+            self.skip_lines(inputfile, ['d', 'b', 'b'])#, 'b', 'b', 'title', 'b', 'b'])
             line = next(inputfile)
             while line.strip():
                 if "maximum gradient threshold" in line:
@@ -336,7 +392,7 @@ class NWChem(logfileparser.Logfile):
             self.set_attribute('aooverlaps', aooverlaps)
 
         if line.strip() in ("The SCF is already converged", "The DFT is already converged"):
-            if self.linesearch:
+            if hasattr(self, 'linesearch') and self.linesearch:
                 return
             if hasattr(self, 'scftargets'):
                 self.scftargets.append(self.scftargets[-1])
@@ -521,22 +577,6 @@ class NWChem(logfileparser.Logfile):
         if "Total DFT energy" in line:
             self.metadata["methods"].append("DFT")
 
-        # The line containing the final SCF energy seems to be always identifiable like this.
-        if "Total SCF energy" in line or "Total DFT energy" in line:
-
-            # NWChem often does a line search during geometry optimization steps, reporting
-            # the SCF information but not the coordinates (which are not necessarily 'intermediate'
-            # since the step size can become smaller). We want to skip these SCF cycles,
-            # unless the coordinates can also be extracted (possibly from the gradients?).
-            if hasattr(self, 'linesearch') and self.linesearch:
-                return
-
-            if not hasattr(self, "scfenergies"):
-                self.scfenergies = []
-            energy = float(line.split()[-1])
-            energy = utils.convertor(energy, "hartree", "eV")
-            self.scfenergies.append(energy)
-
         # The final MO orbitals are printed in a simple list, but apparently not for
         # DFT calcs, and often this list does not contain all MOs, so make sure to
         # parse them from the MO analysis below if possible. This section will be like this:
@@ -602,6 +642,9 @@ class NWChem(logfileparser.Logfile):
         # ...
         #
         if "Final" in line and "Molecular Orbital Analysis" in line:
+            ### HACK (try to parse sparse mocoeffs on the fly only with Alpha
+            self.mocoeffs_sparse = []
+            
 
             # Unrestricted jobs have two such blocks, for alpha and beta orbitals, and
             # we need to keep track of which one we're parsing (always alpha in restricted case).
@@ -648,6 +691,15 @@ class NWChem(logfileparser.Logfile):
                 if "-----" in line:
                     line = next(inputfile)
                 while line.strip():
+                    ### HACK for sparse MO coefs (sparse2dense in after_parsing)
+                    l = line.split()
+                    if nvector > len(self.mocoeffs_sparse):
+                        self.mocoeffs_sparse.append([])
+                    if len(l) == 5:
+                        self.mocoeffs_sparse[int(nvector) - 1].append((l[0],l[1]))
+                    elif len(l) == 10:
+                        self.mocoeffs_sparse[int(nvector) - 1].append((l[0],l[1]))
+                        self.mocoeffs_sparse[int(nvector) - 1].append((l[5],l[6]))
                     line = next(inputfile)
                 line = next(inputfile)
 
@@ -655,7 +707,7 @@ class NWChem(logfileparser.Logfile):
 
             if not hasattr(self, 'moenergies') or (len(self.moenergies) > alphabeta):
                 self.moenergies = []
-            self.moenergies.append(energies)
+                self.moenergies.append(energies)
 
             if not hasattr(self, 'mosyms') or (len(self.mosyms) > alphabeta):
                 self.mosyms = []
@@ -677,7 +729,6 @@ class NWChem(logfileparser.Logfile):
                     self.homos.append(nvectors[nvector_index] - 1)
                 else:
                     self.homos.append(-1)
-
         # This is where the full MO vectors are printed, but a special
         # directive is needed for it in the `scf` or `dft` block:
         #   print "final vectors" "final vectors analysis"
@@ -715,7 +766,6 @@ class NWChem(logfileparser.Logfile):
                 nmo = int(size.split(',')[1].split(':')[1])
                 self.set_attribute('nbasis', nbasis)
                 self.set_attribute('nmo', nmo)
-
                 self.skip_line(inputfile, 'blank')
                 mocoeffs = []
                 while len(mocoeffs) < self.nmo:
@@ -1072,6 +1122,139 @@ class NWChem(logfileparser.Logfile):
                     atomcoords_step.append([float(c) for c in tokens[2:5]])
                     line = next(inputfile)
                 self.atomcoords.append(atomcoords_step)
+            
+        # HACK Extract Thermochemistry in au (Hartree)
+        # Temperature                      =   298.15K
+        # frequency scaling parameter      =   1.0000
+        # Zero-Point correction to Energy  =  259.352 kcal/mol  (  0.413304 au)
+        # Thermal correction to Energy     =  275.666 kcal/mol  (  0.439302 au)
+        # Thermal correction to Enthalpy   =  276.258 kcal/mol  (  0.440246 au)
+        # Total Entropy                    =  176.764 cal/mol-K
+        # - Translational                =   44.169 cal/mol-K (mol. weight = 448.1245)
+        # - Rotational                   =   37.018 cal/mol-K (symmetry #  =        1)
+        # - Vibrational                  =   95.577 cal/mol-K
+        # Cv (constant volume heat capacity) =  103.675 cal/mol-K
+        # - Translational                  =    2.979 cal/mol-K
+        # - Rotational                     =    2.979 cal/mol-K
+        # - Vibrational                    =   97.716 cal/mol-K
+        if line[1:12] == "Temperature":
+            self.set_attribute('temperature', float(line.split()[2][:-1]))
+        if line[1:28] == "frequency scaling parameter":
+            self.set_attribute('pressure', float(line.split()[4]))
+        if line[1:31] == "Thermal correction to Enthalpy":
+            self.set_attribute('enthalpy', float(line.split()[8]) + utils.convertor(self.scfenergies[-1], "eV", "hartree"))
+        if line[1:32] == "Zero-Point correction to Energy":
+            self.set_attribute('zero_point_energy', float(line.split()[8]) + utils.convertor(self.scfenergies[-1], "eV", "hartree"))
+        if line[1:29] == "Thermal correction to Energy":
+            self.set_attribute('electronic_thermal_energy', float(line.split()[8]) + utils.convertor(self.scfenergies[-1], "eV", "hartree"))
+        if line[1:14] == "Total Entropy":
+            self.set_attribute('entropy', utils.convertor(1e-3 * float(line.split()[3]),"kcal/mol","hartree"))
+        
+        # HACK extract vibrational frequencies (in cm-1)
+        if line.strip() == "Normal Eigenvalue ||           Projected Infra Red Intensities":
+            if not hasattr(self, 'vibfreqs'):
+                self.vibfreqs = []
+            if not hasattr(self, 'vibirs'):
+                self.vibirs = []
+            line = next(inputfile) # units
+            line = next(inputfile) # dashes
+            line = next(inputfile) # first line of data
+            while (line[:-1] != " ----------------------------------------------------------------------------"):
+                self.vibfreqs.append(float(line.split()[1]))
+                self.vibirs.append(float(line.split()[5]))
+                line = next(inputfile) # next line
+        # HACK TD transitions, 
+        #
+        # TODO :  restricted or alpha unrestricted ?
+        #         For beta unrestricted ?
+        #
+        # have to deal with
+        # ----------------------------------------------------------------------------
+        # Root   1 singlet a              0.105782828 a.u.                2.8785 eV 
+        # ----------------------------------------------------------------------------
+        #    Transition Moments    X -1.88278   Y -0.46346   Z -0.05660
+        #    Transition Moments   XX -5.63612  XY  4.57009  XZ -0.38291
+        #    Transition Moments   YY  6.48024  YZ -1.50109  ZZ -0.17430
+        #    Dipole Oscillator Strength                    0.2653650650
+        #    Electric Quadrupole                           0.0000003789
+        #    Magnetic Dipole                               0.0000001767
+        #    Total Oscillator Strength                     0.2653656206
+        #
+        #    Occ.  117  a   ---  Virt.  118  a    0.98676 X
+        #    Occ.  117  a   ---  Virt.  118  a   -0.08960 Y
+        #    Occ.  117  a   ---  Virt.  119  a    0.08235 X
+        # ----------------------------------------------------------------------------
+        # Root   2 singlet a              0.127858653 a.u.                3.4792 eV 
+        # ----------------------------------------------------------------------------
+        #    Transition Moments    X -0.02031   Y  0.11238   Z -0.09893
+        #    Transition Moments   XX -0.23065  XY -0.35697  XZ -0.11250
+        #    Transition Moments   YY  0.16402  YZ -0.01716  ZZ  0.16705
+        #    Dipole Oscillator Strength                    0.0019460560
+        #    Electric Quadrupole                           0.0000000021
+        #    Magnetic Dipole                               0.0000002301
+        #    Total Oscillator Strength                     0.0019462882
+        #
+        #    Occ.  110  a   ---  Virt.  118  a   -0.05918 X
+        #    Occ.  110  a   ---  Virt.  119  a   -0.06022 X
+        #    Occ.  110  a   ---  Virt.  124  a    0.05962 X
+        #    Occ.  114  a   ---  Virt.  118  a    0.87840 X
+        #    Occ.  114  a   ---  Virt.  119  a   -0.12213 X
+        #    Occ.  114  a   ---  Virt.  123  a    0.07120 X
+        #    Occ.  114  a   ---  Virt.  124  a   -0.05022 X
+        #    Occ.  114  a   ---  Virt.  125  a    0.06104 X
+        #    Occ.  114  a   ---  Virt.  126  a    0.05065 X
+        #    Occ.  115  a   ---  Virt.  118  a    0.12907 X
+        #    Occ.  116  a   ---  Virt.  118  a   -0.40137 X
+
+        if line[:6] == "  Root":
+            et_num = int(line.split()[1])
+            if not hasattr(self, "etenergies") or et_num == 1 :
+                self.etenergies = []
+                self.etoscs = []
+                self.etsyms = []
+                self.etsecs = []
+            
+            self.etenergies.append(utils.convertor(self.float(line.split()[-2]), "eV", "wavenumber"))
+            self.etsyms.append(str.join(" ", line.split()[2:-4]))
+            for _ in range(8):
+                line = next(inputfile)
+            self.etoscs.append(float(line.split()[-1]))
+            line = next(inputfile) # blank line
+            line = next(inputfile) # first transition
+            CIScontrib = []
+            while line.find("Occ.") >= 0:
+                if (len(line.split()) == 9):
+                    _, occ, _, _, _, virt, _, coef, direction = line.split()
+                    type1 = "alpha"
+                    type2 = "alpha"
+                elif (len(line.split()) == 11):
+                    _, occ, type1, _, _, _, virt, type2, _, coef, direction = line.split()
+                    raise(Exception("Excited State transition : not only alpha"))
+                else:
+                    # not alpha/beta
+                    raise(Exception("Excited State transition : not implemented"))
+                occ = int(occ) - 1  # subtract 1 so that it is an index into moenergies
+                virt = int(virt) - 1  # subtract 1 so that it is an index into moenergies
+                coef = float(coef)
+                if (direction == 'Y'):
+                    tmp = virt
+                    virt = occ
+                    occ = tmp
+                    ### coef = -coef # TODO : check !
+                    tmp = type1
+                    type1 = type2
+                    type2 = tmp
+                frommoindex = 0  # For restricted or alpha unrestricted
+                if type1 == "beta":
+                    frommoindex = 1
+                tomoindex = 0
+                if type2 == "beta":
+                    tomoindex = 1
+                # For restricted calculations, the percentage will be corrected
+                # after parsing (see after_parsing() above).
+                CIScontrib.append([(occ, frommoindex), (virt, tomoindex), coef])
+                line = next(inputfile)
+            self.etsecs.append(CIScontrib)
 
     def before_parsing(self):
         """NWChem-specific routines performed before parsing a file.
@@ -1088,7 +1271,6 @@ class NWChem(logfileparser.Logfile):
 
         Currently, expands self.shells() into self.aonames.
         """
-
         # setup a few necessary things, including a regular expression
         # for matching the shells
         table = utils.PeriodicTable()
@@ -1155,3 +1337,18 @@ class NWChem(logfileparser.Logfile):
         if self.is_BOMD:
             self.atomcoords = utils.convertor(numpy.asarray(self.atomcoords)[1:, ...],
                                               'bohr', 'Angstrom')
+        ### HACK construct dense mocoeffs with sparse f necessary
+        ### work only with alpha, not beta
+        if not hasattr(self, 'mocoeffs'):
+            self.mocoeffs = []
+            for i, vect in enumerate(self.mocoeffs_sparse):
+                self.mocoeffs.append([0.0 for _ in range(self.nbasis)])
+                for cpl in vect:
+                    self.mocoeffs[i][int(cpl[0]) - 1] = float(cpl[1])
+            #print(self.mocoeffs)
+            self.mocoeffs = [numpy.array(self.mocoeffs)]
+
+        ### HACK add Gibbs free energy
+        # entropy = (self.enthalpy - self.freeenergy) / self.temperature
+        if not hasattr(self, 'freeenergy') and hasattr(self, 'enthalpy') and hasattr(self, 'entropy') and hasattr(self, 'temperature'):
+            self.freeenergy = self.enthalpy - (self.entropy * self.temperature)
